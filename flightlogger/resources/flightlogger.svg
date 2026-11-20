@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- FlightLogger logo: the OmniQuadGUI drone (X-frame, four rotors, hub)
+       in lavender, flying above a flight-log graph with a time cursor. -->
+  <defs>
+    <linearGradient id="fl-area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9b87e0" stop-opacity="0.50"/>
+      <stop offset="1" stop-color="#9b87e0" stop-opacity="0.02"/>
+    </linearGradient>
+    <linearGradient id="fl-line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8670d4"/>
+      <stop offset="1" stop-color="#d4caf7"/>
+    </linearGradient>
+    <clipPath id="fl-plot"><rect x="34" y="132" width="188" height="86" rx="6"/></clipPath>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#2b2b2b"/>
+
+  <!-- graph: grid, filled trace, cursor -->
+  <g stroke="#3a3645" stroke-width="2">
+    <line x1="40" y1="212" x2="216" y2="212"/>
+    <line x1="40" y1="186" x2="216" y2="186"/>
+    <line x1="40" y1="160" x2="216" y2="160"/>
+  </g>
+  <g clip-path="url(#fl-plot)">
+    <path d="M40 204 C56 203 62 182 78 184 S98 206 114 196 S134 160 152 168 S178 190 192 168 S208 146 216 144 L216 220 L40 220 Z"
+          fill="url(#fl-area)"/>
+  </g>
+  <path d="M40 204 C56 203 62 182 78 184 S98 206 114 196 S134 160 152 168 S178 190 192 168 S208 146 216 144"
+        fill="none" stroke="url(#fl-line)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="152" y1="140" x2="152" y2="214" stroke="#e9e4ff" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="152" cy="168" r="7" fill="#2b2b2b" stroke="#e9e4ff" stroke-width="3"/>
+
+  <!-- drone from the OmniQuadGUI logo, scaled and recoloured -->
+  <g transform="translate(128 82) scale(0.56) translate(-128 -128)">
+    <g stroke="#9b87e0" stroke-width="14" stroke-linecap="round">
+      <line x1="82" y1="82" x2="174" y2="174"/>
+      <line x1="174" y1="82" x2="82" y2="174"/>
+    </g>
+    <g fill="#9b87e0">
+      <circle cx="70" cy="70" r="22"/>
+      <circle cx="186" cy="70" r="22"/>
+      <circle cx="70" cy="186" r="22"/>
+      <circle cx="186" cy="186" r="22"/>
+    </g>
+    <g fill="#2b2b2b">
+      <circle cx="70" cy="70" r="8"/>
+      <circle cx="186" cy="70" r="8"/>
+      <circle cx="70" cy="186" r="8"/>
+      <circle cx="186" cy="186" r="8"/>
+    </g>
+    <circle cx="128" cy="128" r="24" fill="#f2f2f2"/>
+    <circle cx="128" cy="128" r="10" fill="#9b87e0"/>
+  </g>
+</svg>

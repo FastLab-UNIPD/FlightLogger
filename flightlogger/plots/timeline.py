@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 
 from ..log.ulog_loader import FlightLog
 from ..timebus import TimeBus
+from ..ui import theme
 from .common import MODE_ALPHA_TIMELINE, CURSOR_COLOR, TimeAxis, message_color, mode_color
 
 EVENT_COLORS = {"armed": "#b06000", "disarmed": "#b06000", "takeoff": "#007a50", "landed": "#007a50"}
@@ -57,7 +58,7 @@ class TimelineWidget(pg.PlotWidget):
         self.vb.setXRange(0, dur, padding=0)
 
         for seg in log.mode_segments():
-            color = mode_color(seg.nav_state, MODE_ALPHA_TIMELINE)
+            color = mode_color(seg.nav_state, theme.mode_alpha(MODE_ALPHA_TIMELINE))
             if color is None:
                 continue
             r = pg.LinearRegionItem((seg.t0, seg.t1), movable=False, brush=pg.mkBrush(*color),
@@ -77,7 +78,7 @@ class TimelineWidget(pg.PlotWidget):
             rng = np.ptp(alt[ok]) if ok.any() else 0
             if rng > 0:
                 y = 0.08 + 0.7 * (alt - np.nanmin(alt[ok])) / rng
-                c = pg.PlotDataItem(t, y, pen=pg.mkPen("#555", width=1))
+                c = pg.PlotDataItem(t, y, pen=pg.mkPen(theme.plot_color("#555"), width=1))
                 c.setDownsampling(auto=True, method="peak")
                 self._add(c)
         for ev in log.events():
@@ -94,7 +95,8 @@ class TimelineWidget(pg.PlotWidget):
         self._message_items = []
         for m in messages:
             it = pg.InfiniteLine(m.t, angle=90, movable=False,
-                                 pen=pg.mkPen(message_color(m.level), width=1, style=Qt.DotLine))
+                                 pen=pg.mkPen(theme.plot_color(message_color(m.level)), width=1,
+                                              style=Qt.DotLine))
             it.setToolTip(f"[{m.level}] {m.text}")
             it.setZValue(3)
             pi.addItem(it, ignoreBounds=True)
@@ -109,8 +111,10 @@ class TimelineWidget(pg.PlotWidget):
             color = pg.mkColor(n.color)
             if n.t_end is None:
                 it = pg.InfiniteLine(n.t, angle=90, movable=False, pen=pg.mkPen(color, width=2),
-                                     label=n.title[:24], labelOpts={"position": 0.55, "color": color,
-                                                                    "fill": (255, 255, 255, 190)})
+                                     label=n.title[:24], labelOpts={
+                                         "position": 0.55, "color": color,
+                                         "fill": (30, 30, 30, 200) if theme.is_dark()
+                                         else (255, 255, 255, 190)})
             else:
                 fill = pg.mkColor(n.color)
                 fill.setAlpha(70)

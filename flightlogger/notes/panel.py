@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeade
 
 from ..plots.common import fmt_time
 from ..timebus import TimeBus
+from ..ui import icons
 from .model import CATEGORIES, DEFAULT_CATEGORY, Note, NotesModel
 
 ID_ROLE = Qt.UserRole
@@ -24,10 +25,10 @@ class NotesPanel(QWidget):
         self._current: str | None = None
         self._loading = False
 
-        add_btn = QPushButton("+ Note")
+        add_btn = icons.decorate(QPushButton("Note"), "note", "primary")
         add_btn.setToolTip("Add a note at the red cursor (N)")
         add_btn.clicked.connect(lambda: self.add_at_cursor())
-        self.del_btn = QPushButton("Delete")
+        self.del_btn = icons.decorate(QPushButton("Delete"), "trash")
         self.del_btn.clicked.connect(self.delete_current)
         top = QHBoxLayout()
         top.addWidget(add_btn)
@@ -54,7 +55,7 @@ class NotesPanel(QWidget):
         for name in CATEGORIES:
             self.category.addItem(name)
         self.time_label = QLabel()
-        self.time_label.setStyleSheet("font-family: monospace;")
+        self.time_label.setStyleSheet("font-family: monospace; background: transparent;")
         self.set_t_btn = QPushButton("Set start")
         self.set_t_btn.setToolTip("Move the note to the red cursor")
         self.set_end_btn = QPushButton("Set end")

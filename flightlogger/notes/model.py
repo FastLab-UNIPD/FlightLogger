@@ -11,7 +11,7 @@ CATEGORIES = {
     "Info": "#009e73",
     "Maneuver": "#0072b2",
     "Anomaly": "#e69f00",
-    "Crash": "#7b2d26",
+    "Crash": "#c0504d",
     "Question": "#cc79a7",
 }
 DEFAULT_CATEGORY = "Info"

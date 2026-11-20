@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QListWidg
                                QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
 from ..plots.common import MIME_GRAPHS
+from . import icons, theme
 
 ID_ROLE = Qt.UserRole
 KIND_HINT = {"spectrogram": "  ▦", "fft": "  ∿ Hz"}
@@ -39,11 +40,11 @@ class GraphList(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.target_label = QLabel()
-        self.target_label.setStyleSheet("color: gray;")
+        theme.style_role(self.target_label, "dim", "color: gray;")
         self.list = _List()
         self.list.itemChanged.connect(self._on_item_changed)
-        all_btn = QPushButton("All")
-        none_btn = QPushButton("None")
+        all_btn = icons.decorate(QPushButton("All"), "check_all")
+        none_btn = icons.decorate(QPushButton("None"), "clear")
         all_btn.clicked.connect(lambda: self.allRequested.emit(True))
         none_btn.clicked.connect(lambda: self.allRequested.emit(False))
         row = QHBoxLayout()

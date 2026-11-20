@@ -38,6 +38,9 @@ def main(video: str, log: str | None):
     # keep our window above other apps (a window opened by a script may be
     # stacked behind them, which would hide it from the screen capture)
     w.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    # never take keyboard focus: keys typed elsewhere would reach the app
+    w.setAttribute(Qt.WA_ShowWithoutActivating, True)
+    w.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
     w.show()
 
     def wait(ms):
@@ -73,6 +76,8 @@ def main(video: str, log: str | None):
         top = v.window()
         if top is not w and not top.windowFlags() & Qt.WindowStaysOnTopHint:
             top.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            top.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            top.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
             top.show()
         top.raise_()
         pb.seek_video(start)

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QLabel, QStackedLayout, QWidget
 from ..log.ulog_loader import FlightLog
 from ..plots.common import CURSOR_COLOR
 from ..timebus import TimeBus
+from . import theme
 
 
 class TrackView(QWidget):
@@ -23,14 +24,16 @@ class TrackView(QWidget):
         pi.setLabel("left", "North [m]")
         for name in ("left", "bottom"):
             pi.getAxis(name).enableAutoSIPrefix(False)
-        pi.setTitle("Position (local frame)", size="9pt")
-        self.legend = pi.addLegend(offset=(-6, 4), labelTextSize="8pt",
-                                   brush=pg.mkBrush(255, 255, 255, 215))
+        title = {"size": "9pt"}
+        if theme.title_color():
+            title["color"] = theme.title_color()
+        pi.setTitle("Position (local frame)", **title)
+        self.legend = pi.addLegend(offset=(-6, 4), labelTextSize="8pt", **theme.legend_style())
         self.marker = pg.ScatterPlotItem(size=11, brush=pg.mkBrush(CURSOR_COLOR),
                                          pen=pg.mkPen("w", width=1.5))
         self.marker.setZValue(100)
         self.empty = QLabel("No local position in this log", alignment=Qt.AlignCenter)
-        self.empty.setStyleSheet("color: gray;")
+        theme.style_role(self.empty, "dim", "color: gray;")
         self.stack = QStackedLayout(self)
         self.stack.addWidget(self.empty)
         self.stack.addWidget(self.plot)
@@ -48,7 +51,8 @@ class TrackView(QWidget):
             self.stack.setCurrentWidget(self.empty)
             return
         for s in self._track.series:
-            item = pg.PlotDataItem(s.t, s.y, pen=pg.mkPen(s.color, width=2), name=s.label)
+            item = pg.PlotDataItem(s.t, s.y, pen=pg.mkPen(theme.plot_color(s.color), width=2),
+                                   name=s.label)
             pi.addItem(item)
             self._items.append(item)
         pi.addItem(self.marker)

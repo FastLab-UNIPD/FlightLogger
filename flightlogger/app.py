@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
                                QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -22,6 +22,7 @@ from .plots.graph_panel import GraphPanel
 from .plots.timeline import TimelineWidget
 from .timebus import TimeBus
 from .ui import dock_host as dh
+from .ui import icons, theme
 from .ui.graph_list import GraphList
 from .ui.signal_browser import SignalBrowser
 from .ui.tables import MessagesTable, ParamsTable
@@ -302,13 +303,24 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Transport")
         tb.setObjectName("transport")
         self.addToolBar(Qt.TopToolBarArea, tb)
-        tb.addAction("⏮", lambda: self.bus.seek(0.0)).setToolTip("Start (Home)")
-        tb.addAction("−1s", lambda: self.step(-STEP_MEDIUM)).setToolTip("Back 1 s (Shift+←)")
-        tb.addAction("−0.1s", lambda: self.step(-STEP_SMALL)).setToolTip("Back 0.1 s (←)")
-        self.play_act = tb.addAction("▶", self.clock.toggle)
+        tb.setIconSize(QSize(18, 18))
+        tb.setMovable(False)
+
+        def act(icon_name, text, tip, slot):
+            a = tb.addAction(icons.icon(icon_name), text, slot)
+            a.setToolTip(tip)
+            return a
+
+        act("to_start", "Start", "Start (Home)", lambda: self.bus.seek(0.0))
+        act("rewind", "−1 s", "Back 1 s (Shift+←)", lambda: self.step(-STEP_MEDIUM))
+        act("step_back", "−0.1 s", "Back one video frame / 0.1 s (←)", lambda: self.step(-STEP_SMALL))
+        self.play_act = tb.addAction(icons.icon("play", "primary"), "Play", self.clock.toggle)
         self.play_act.setToolTip("Play/Pause (Space)")
-        tb.addAction("+0.1s", lambda: self.step(STEP_SMALL)).setToolTip("Forward 0.1 s (→)")
-        tb.addAction("+1s", lambda: self.step(STEP_MEDIUM)).setToolTip("Forward 1 s (Shift+→)")
+        play_btn = tb.widgetForAction(self.play_act)
+        play_btn.setObjectName("playButton")
+        play_btn.setProperty("variant", "primary")
+        act("step_forward", "+0.1 s", "Forward one video frame / 0.1 s (→)", lambda: self.step(STEP_SMALL))
+        act("forward", "+1 s", "Forward 1 s (Shift+→)", lambda: self.step(STEP_MEDIUM))
         tb.addSeparator()
         self.speed_box = QComboBox()
         self.speed_box.setFocusPolicy(Qt.NoFocus)
@@ -320,11 +332,13 @@ class MainWindow(QMainWindow):
             lambda i: self.clock.set_speed(self.speed_box.itemData(i)))
         tb.addWidget(self.speed_box)
         tb.addSeparator()
-        self.time_label = QLabel()
-        self.time_label.setStyleSheet("font-family: monospace; font-size: 13px; padding: 0 8px;")
+        self.time_label = QLabel(objectName="timeLabel")
+        if not theme.is_dark():
+            self.time_label.setStyleSheet("font-family: monospace; font-size: 13px; padding: 0 8px;")
         tb.addWidget(self.time_label)
 
-        self.clock.playingChanged.connect(lambda p: self.play_act.setText("⏸" if p else "▶"))
+        self.clock.playingChanged.connect(
+            lambda p: self.play_act.setIcon(icons.icon("pause" if p else "play", "primary")))
         self.clock.speedChanged.connect(self._on_speed)
         self.bus.timeChanged.connect(self._update_time_label)
         self._update_time_label(0.0)
@@ -341,18 +355,19 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self):
         m = self.menuBar().addMenu("&File")
-        a = QAction("&Open log…", self, shortcut=QKeySequence.Open, triggered=self.open_log_dialog)
+        a = QAction(icons.icon("log"), "&Open log…", self, shortcut=QKeySequence.Open,
+                    triggered=self.open_log_dialog)
         m.addAction(a)
-        m.addAction(QAction("Open Flight Review &link…", self, shortcut="Ctrl+L",
+        m.addAction(QAction(icons.icon("globe"), "Open Flight Review &link…", self, shortcut="Ctrl+L",
                             triggered=self.open_flight_review_dialog))
-        m.addAction(QAction("Open &video…", self, shortcut="Ctrl+Shift+O",
+        m.addAction(QAction(icons.icon("film"), "Open &video…", self, shortcut="Ctrl+Shift+O",
                             triggered=self.open_video_dialog))
         m.addSeparator()
-        m.addAction(QAction("Open &project…", self, shortcut="Ctrl+Shift+P",
+        m.addAction(QAction(icons.icon("folder"), "Open &project…", self, shortcut="Ctrl+Shift+P",
                             triggered=self.open_project_dialog))
         self.recent_menu = m.addMenu("Recent projects")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
-        m.addAction(QAction("&Save project", self, shortcut=QKeySequence.Save,
+        m.addAction(QAction(icons.icon("save"), "&Save project", self, shortcut=QKeySequence.Save,
                             triggered=lambda: self.save_project()))
         m.addAction(QAction("Save project &as…", self, shortcut="Ctrl+Shift+S",
                             triggered=lambda: self.save_project(ask=True)))
@@ -360,9 +375,11 @@ class MainWindow(QMainWindow):
         m.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
 
         v = self.menuBar().addMenu("&View")
-        v.addAction(QAction("New &graph panel", self, shortcut="Ctrl+G", triggered=self.new_panel))
-        v.addAction(QAction("Add &note at cursor", self, triggered=self.add_note))  # key: N
-        self.layout_menu = v.addMenu("&Layouts")
+        v.addAction(QAction(icons.icon("graph"), "New &graph panel", self, shortcut="Ctrl+G",
+                            triggered=self.new_panel))
+        v.addAction(QAction(icons.icon("note"), "Add &note at cursor", self,
+                            triggered=self.add_note))  # key: N
+        self.layout_menu = v.addMenu(icons.icon("layout"), "&Layouts")
         self.layout_menu.aboutToShow.connect(self._fill_layout_menu)
         msg_menu = v.addMenu("Log &messages on graphs")
         group = QActionGroup(msg_menu)

@@ -1,3 +1,5 @@
+<p align="center"><img src="flightlogger/resources/flightlogger.svg" width="128" alt="FlightLogger logo"></p>
+
 # FlightLogger
 
 Desktop viewer for PX4 `.ulg` flight logs: Flight Review's graphs in dockable
@@ -9,7 +11,8 @@ saved as reusable layouts.
 ![FlightLogger: flight video synced to Flight Review graphs, track, timeline and notes](docs/screenshot.png)
 
 *A PX4 log with its ground-camera video synced (video left, Flight Review graphs
-center, track and notes right, whole-flight timeline bottom).*
+center, track and notes right, whole-flight timeline bottom). The dark theme
+with lavender accents follows the look of OmniQuadGUI.*
 
 The graph set is ported from [PX4 Flight Review](https://github.com/PX4/flight_review)
 (BSD-3-Clause, see `flightlogger/log/FLIGHT_REVIEW_LICENSE.md`): same topics,

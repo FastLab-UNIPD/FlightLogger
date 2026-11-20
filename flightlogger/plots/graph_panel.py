@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QComboBox, QGraphicsItem, QHBoxLayout, QLabel, QM
 from ..log.fr_graphs import GraphDef
 from ..log.ulog_loader import FlightLog, SignalKey
 from ..timebus import TimeBus
+from ..ui import icons, theme
 from .common import (CURSOR_COLOR, MIME_GRAPHS, MIME_SIGNALS, PALETTE, TimeAxis, fmt_time,
                      message_color, mode_color)
 
@@ -53,7 +54,10 @@ class GraphPlot:
         self.item.getAxis("left").setWidth(60)
         for name in ("left", "bottom"):
             self.item.getAxis(name).enableAutoSIPrefix(False)
-        self.item.setTitle(self.title, size="9pt")
+        self._title_opts = {"size": "9pt"}
+        if theme.title_color():
+            self._title_opts["color"] = theme.title_color()
+        self.item.setTitle(self.title, **self._title_opts)
         self.vb: pg.ViewBox = self.item.getViewBox()
         self.vb.setMouseEnabled(x=True, y=False)
         self.vb.enableAutoRange(axis="y")
@@ -61,8 +65,7 @@ class GraphPlot:
         if self.time_based:
             self.vb.disableAutoRange(axis="x")
         self.legend = self.item.addLegend(offset=(-6, 4), labelTextSize="8pt",
-                                          brush=pg.mkBrush(255, 255, 255, 215),
-                                          pen=pg.mkPen(200, 200, 200))
+                                          **theme.legend_style())
         self.cursor = None
         if self.time_based:
             self.cursor = pg.InfiniteLine(angle=90, movable=True,
@@ -91,12 +94,13 @@ class GraphPlot:
         if g.x_label:
             pi.setLabel("bottom", g.x_label)
         for s in g.series:
+            color = theme.plot_color(s.color)
             if s.scatter:
                 item = pg.PlotDataItem(s.t, s.y, pen=None, symbol="o", symbolSize=5,
-                                       symbolPen=pg.mkPen(s.color, width=1.5), symbolBrush=None,
+                                       symbolPen=pg.mkPen(color, width=1.5), symbolBrush=None,
                                        name=s.label or None)
             else:
-                item = pg.PlotDataItem(s.t, s.y, pen=pg.mkPen(s.color, width=LINE_WIDTH),
+                item = pg.PlotDataItem(s.t, s.y, pen=pg.mkPen(color, width=LINE_WIDTH),
                                        stepMode="left" if s.step else None,
                                        name=s.label or None)
             pi.addItem(_cache(item))
@@ -110,7 +114,7 @@ class GraphPlot:
             img.setRect(QRectF(sp.t0, sp.f0, sp.t1 - sp.t0, sp.f1 - sp.f0))
             img.setZValue(-200)
             pi.addItem(_cache(img))
-            pi.setTitle(f"{self.title}  ({lo:.0f} … {hi:.0f} dB)", size="9pt")
+            pi.setTitle(f"{self.title}  ({lo:.0f} … {hi:.0f} dB)", **self._title_opts)
         if g.y_range is not None:
             self.vb.disableAutoRange(axis="y")
             self.vb.setYRange(*g.y_range, padding=0)
@@ -134,19 +138,24 @@ class GraphPlot:
             c.setAlpha(128)
             pi.addItem(pg.InfiniteLine(y, angle=0, pen=pg.mkPen(c, width=1)), ignoreBounds=True)
         for f, label in g.vmarks:
-            pi.addItem(pg.InfiniteLine(f, angle=90, pen=pg.mkPen("k", width=1), label=" " + label,
-                                       labelOpts={"position": 0.5, "color": "k",
+            ink = theme.plot_color("k")
+            pi.addItem(pg.InfiniteLine(f, angle=90, pen=pg.mkPen(ink, width=1), label=" " + label,
+                                       labelOpts={"position": 0.5, "color": ink,
                                                   "anchors": [(0, 0.5), (0, 0.5)]}),
                        ignoreBounds=True)
         for t in g.nan_times:
-            pi.addItem(pg.InfiniteLine(t, angle=90, pen=pg.mkPen("k", width=2, style=Qt.DashLine),
-                                       label=" NaN", labelOpts={"position": 0.1, "color": "k",
+            ink = theme.plot_color("k")
+            pi.addItem(pg.InfiniteLine(t, angle=90, pen=pg.mkPen(ink, width=2, style=Qt.DashLine),
+                                       label=" NaN", labelOpts={"position": 0.1, "color": ink,
                                                                 "anchors": [(0, 1), (0, 1)]}),
                        ignoreBounds=True)
+        def shade(alpha):  # translucent black on white plots, white on dark ones
+            return (255, 255, 255, int(alpha * 0.8)) if theme.is_dark() else (0, 0, 0, alpha)
+
         if g.dropouts:
             d = np.array(g.dropouts)
             pi.addItem(pg.BarGraphItem(x0=d[:, 0], x1=d[:, 1], y0=d[:, 2], y1=d[:, 3],
-                                       brush=pg.mkBrush(0, 0, 0, 38), pen=pg.mkPen(0, 0, 0, 76)),
+                                       brush=pg.mkBrush(*shade(38)), pen=pg.mkPen(*shade(76))),
                        ignoreBounds=True)
         self._update_legend()
 
@@ -156,7 +165,7 @@ class GraphPlot:
         if not self.time_based or key in self.curves or log is None or not log.has_signal(key):
             return False
         t, y = log.get(key)
-        color = PALETTE[len(self.signals) % len(PALETTE)]
+        color = theme.plot_color(PALETTE[len(self.signals) % len(PALETTE)])
         curve = self.item.plot(t, y, pen=pg.mkPen(color, width=LINE_WIDTH),
                                name=SignalKey.parse(key).label)
         _cache(curve)
@@ -209,7 +218,8 @@ class GraphPlot:
             return
         for m in messages:
             it = pg.InfiniteLine(m.t, angle=90, movable=False,
-                                 pen=pg.mkPen(message_color(m.level), width=1, style=Qt.DotLine))
+                                 pen=pg.mkPen(theme.plot_color(message_color(m.level)), width=1,
+                                              style=Qt.DotLine))
             it.setToolTip(f"[{m.level}] {m.text}")
             it.setZValue(-60)
             self.item.addItem(it, ignoreBounds=True)
@@ -222,7 +232,7 @@ class GraphPlot:
         if not self.time_based or (self.graph is not None and not self.graph.mode_background):
             return
         for seg in segments:
-            color = mode_color(seg.nav_state)
+            color = mode_color(seg.nav_state, theme.mode_alpha(23))
             if color is None:
                 continue
             r = pg.LinearRegionItem((seg.t0, seg.t1), movable=False, brush=pg.mkBrush(*color),
@@ -333,7 +343,7 @@ class GraphPanel(QWidget):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(4, 2, 4, 2)
-        add_btn = QToolButton(text="+ Plot", toolTip="Add an empty plot (or drop signals below)")
+        add_btn = QToolButton(text="Plot", toolTip="Add an empty plot (or drop signals below)")
         add_btn.clicked.connect(lambda: self.add_plot())
         self.link_btn = QToolButton(text="Link X", checkable=True, checked=True,
                                     toolTip="Share zoom/pan with other linked panels")
@@ -341,6 +351,10 @@ class GraphPanel(QWidget):
         self.follow_btn = QToolButton(text="Follow", checkable=True, checked=True,
                                       toolTip="Scroll the view to keep the cursor visible")
         fit_btn = QToolButton(text="Fit", toolTip="Show the whole flight")
+        for b, name in ((add_btn, "plus"), (self.link_btn, "link"), (self.follow_btn, "follow"),
+                        (fit_btn, "fit")):
+            icons.decorate(b, name)
+            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         fit_btn.clicked.connect(self.fit_all)
         self.height_box = QComboBox(toolTip="Plot height")
         self.height_box.setFocusPolicy(Qt.NoFocus)
@@ -360,7 +374,7 @@ class GraphPanel(QWidget):
         self.scroll.setFrameShape(QScrollArea.NoFrame)
         self.scroll.verticalScrollBar().valueChanged.connect(self._refresh_stale)
         self.hint = QLabel("Drag graphs or signals here", alignment=Qt.AlignCenter)
-        self.hint.setStyleSheet("color: gray;")
+        theme.style_role(self.hint, "dim", "color: gray;")
         self.hint.setAcceptDrops(False)
 
         lay = QVBoxLayout(self)

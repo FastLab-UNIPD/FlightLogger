@@ -23,6 +23,7 @@ from ..log.ulog_loader import FlightLog
 from ..playback import Playback
 from ..plots.common import fmt_time
 from ..timebus import TimeBus
+from ..ui import icons, theme
 from .mpv_widget import MpvWidget, mpv_available
 
 SLIDER_RES = 1000  # slider steps per second
@@ -65,9 +66,9 @@ class VideoPanel(QWidget):
         self.ph_label = QLabel("No video loaded.\nOpen one (Ctrl+Shift+O) or drop a video file on the window."
                                if ok else msg, alignment=Qt.AlignCenter)
         self.ph_label.setWordWrap(True)
-        self.ph_label.setStyleSheet("color: gray;")
+        theme.style_role(self.ph_label, "dim", "color: gray;")
         self.ph_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        open_btn = QPushButton("Open video…")
+        open_btn = icons.decorate(QPushButton("Open video…"), "film", "primary")
         open_btn.setEnabled(ok)
         open_btn.clicked.connect(self.openRequested.emit)
         ph.addStretch(1)
@@ -89,26 +90,29 @@ class VideoPanel(QWidget):
         self.slider.sliderReleased.connect(self._slider_released)
         self.slider.sliderMoved.connect(lambda v: self.pb.seek_video(v / SLIDER_RES))
         self.vtime = QLabel("–")
-        self.vtime.setStyleSheet("font-family: monospace;")
+        self.vtime.setStyleSheet("font-family: monospace; background: transparent;")
         row1 = QHBoxLayout()
         row1.addWidget(self.slider, 1)
         row1.addWidget(self.vtime)
 
-        def tb(text, tip, slot, checkable=False):
+        def tb(text, tip, slot, checkable=False, icon=None, variant="neutral"):
             b = QToolButton(text=text, toolTip=tip, checkable=checkable)
             b.setFocusPolicy(Qt.NoFocus)
             (b.toggled if checkable else b.clicked).connect(slot)
+            if icon:
+                icons.decorate(b, icon, variant)
             return b
 
-        self.back_btn = tb("◀|", "Previous frame (←)", lambda: self.pb.step_frames(-1))
-        self.play_btn = tb("▶", "Play / pause (Space)", self.pb.toggle)
-        self.fwd_btn = tb("|▶", "Next frame (→)", lambda: self.pb.step_frames(1))
+        self.back_btn = tb("◀|", "Previous frame (←)", lambda: self.pb.step_frames(-1), icon="step_back")
+        self.play_btn = tb("▶", "Play / pause (Space)", self.pb.toggle, icon="play", variant="primary")
+        self.fwd_btn = tb("|▶", "Next frame (→)", lambda: self.pb.step_frames(1), icon="step_forward")
         self.link_btn = tb("Linked", "Video and log move together. Uncheck to line them up, "
-                           "then press 'Sync here'.", self.pb.set_linked, checkable=True)
+                           "then press 'Sync here'.", self.pb.set_linked, checkable=True, icon="link")
+        self.link_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.link_btn.setChecked(True)
-        self.mute_btn = tb("🔊", "Mute", self._on_mute, checkable=True)
+        self.mute_btn = tb("🔊", "Mute", self._on_mute, checkable=True, icon="volume")
         self.fs_btn = tb("⛶", "Fullscreen on this panel's screen (double-click video, Esc to leave)",
-                         self.toggle_fullscreen)
+                         self.toggle_fullscreen, icon="fullscreen")
         row2 = QHBoxLayout()
         for w in (self.back_btn, self.play_btn, self.fwd_btn, self.link_btn):
             row2.addWidget(w)
@@ -129,7 +133,7 @@ class VideoPanel(QWidget):
         self.event_box.setFocusPolicy(Qt.NoFocus)
         self.event_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.event_box.activated.connect(self._on_event_chosen)
-        self.sync_btn = QPushButton("Sync here")
+        self.sync_btn = icons.decorate(QPushButton("Sync here"), "sync", "primary")
         self.sync_btn.setToolTip("The current video frame is the log cursor instant")
         self.sync_btn.clicked.connect(self.pb.sync_here)
         row3 = QHBoxLayout()
@@ -141,15 +145,17 @@ class VideoPanel(QWidget):
         row3.addWidget(self.sync_btn)
 
         # second sync point: corrects camera / flight-controller clock drift
-        self.point2_btn = QPushButton("Add 2nd point")
+        self.point2_btn = icons.decorate(QPushButton("Add 2nd point"), "target")
         self.point2_btn.setToolTip("Late in the flight: unlink, line up another moment, then press "
                                    "this to correct clock drift between camera and log")
         self.point2_btn.clicked.connect(self._second_point)
         self.sync_label = QLabel()
-        self.sync_label.setStyleSheet("color: gray;")
+        theme.style_role(self.sync_label, "dim", "color: gray;")
         self.drift_reset_btn = QToolButton(text="Reset drift",
                                            toolTip="Back to a single sync point (no drift correction)")
         self.drift_reset_btn.clicked.connect(self.pb.reset_drift)
+        icons.decorate(self.drift_reset_btn, "undo")
+        self.drift_reset_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         row4 = QHBoxLayout()
         row4.addWidget(self.sync_label, 1)
         row4.addWidget(self.drift_reset_btn)
@@ -159,9 +165,9 @@ class VideoPanel(QWidget):
                              "then press Sync here (or Add 2nd point, late in the flight, "
                              "to correct clock drift).")
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background: #ffe7b0; color: #503000; padding: 3px;")
+        theme.style_role(self.banner, "banner", "background: #ffe7b0; color: #503000; padding: 3px;")
         self.info = QLabel()
-        self.info.setStyleSheet("color: gray; font-size: 11px;")
+        theme.style_role(self.info, "info", "color: gray; font-size: 11px;")
         self.info.setWordWrap(True)
 
         lay = QVBoxLayout(self)
@@ -264,12 +270,14 @@ class VideoPanel(QWidget):
 
     def _on_playing(self, playing: bool):
         self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.setIcon(icons.icon("pause" if playing else "play", "primary"))
 
     def _on_linked(self, linked: bool):
         self.link_btn.blockSignals(True)
         self.link_btn.setChecked(linked)
         self.link_btn.blockSignals(False)
         self.link_btn.setText("Linked" if linked else "Unlinked")
+        self.link_btn.setIcon(icons.icon("link" if linked else "sync", checkable=True))
         self.banner.setVisible(not linked)
         self._update_enabled()
 
@@ -293,6 +301,7 @@ class VideoPanel(QWidget):
 
     def _on_mute(self, muted: bool):
         self.mute_btn.setText("🔇" if muted else "🔊")
+        self.mute_btn.setIcon(icons.icon("mute" if muted else "volume", checkable=True))
         if self.video is not None:
             self.video.set_muted_by_user(muted)
 
