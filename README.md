@@ -6,6 +6,11 @@ frame stepping), timeline notes, a whole-flight timeline, track view, messages
 and parameters. Sessions are saved as project files; window arrangements can be
 saved as reusable layouts.
 
+![FlightLogger: flight video synced to Flight Review graphs, track, timeline and notes](docs/screenshot.png)
+
+*A PX4 log with its ground-camera video synced (video left, Flight Review graphs
+center, track and notes right, whole-flight timeline bottom).*
+
 The graph set is ported from [PX4 Flight Review](https://github.com/PX4/flight_review)
 (BSD-3-Clause, see `flightlogger/log/FLIGHT_REVIEW_LICENSE.md`): same topics,
 derived values, titles, legends, colors and per-log conditions. Not ported yet:
