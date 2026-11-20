@@ -34,13 +34,13 @@ class DockHost:
     def __init__(self, main_window):
         configure_flags()
         self.mgr = CDockManager(main_window)
-        if theme.is_dark():
+        if theme.is_themed():
             self.mgr.setStyleSheet(theme.ADS_QSS)
 
     def make(self, widget, title: str, name: str, deletable: bool = False,
              floatable: bool = True) -> CDockWidget:
         # OmniQuad-style upper-case card titles on the themed UI
-        dw = CDockWidget(self.mgr, title.upper() if theme.is_dark() else title)
+        dw = CDockWidget(self.mgr, title.upper() if theme.is_themed() else title)
         dw.toggleViewAction().setText(title)
         dw.setObjectName(name)
         dw.setWidget(widget)

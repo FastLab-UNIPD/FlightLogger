@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QLabel
 
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov", ".3gp", ".3g2", ".mkv", ".webm", ".avi", ".mts", ".m2ts")
 
@@ -87,6 +88,15 @@ class MpvWidget(QOpenGLWidget):
             hr_seek="yes", hr_seek_framedrop=False, audio_pitch_correction=True,
             video_timing_offset=0, loglevel="error")
         self.info = VideoInfo()
+        # notes / log messages drawn over the picture, top right (a child widget, so it
+        # follows the video into fullscreen)
+        self.overlay = QLabel(self)
+        self.overlay.setTextFormat(Qt.RichText)
+        self.overlay.setWordWrap(True)
+        self.overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.overlay.setStyleSheet("background: rgba(0, 0, 0, 150); color: white; "
+                                   "border-radius: 6px; padding: 6px 8px; font-size: 13px;")
+        self.overlay.hide()
         self._render = None
         self._get_proc = None
         self._restore_vid = None
@@ -113,6 +123,35 @@ class MpvWidget(QOpenGLWidget):
     def _obs_duration(self, _name, value):
         if value:
             self.fileLoaded.emit()
+
+    def set_overlay_html(self, html: str, flash: float = 0.0):
+        """flash 0..1 brightens the box (a small pulse around a note's / message's time)."""
+        if not html:
+            self.overlay.hide()
+            return
+        level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
+        if level != getattr(self, "_flash_level", None):
+            self._flash_level = level
+            k = level / 8
+            r, g, b, a = (round(0 + 85 * k), round(0 + 85 * k), round(0 + 100 * k), round(150 + 70 * k))
+            self.overlay.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
+                                       "border-radius: 6px; padding: 6px 8px; font-size: 13px;")
+        if html != self.overlay.text():
+            self.overlay.setText(html)
+        self.overlay.setVisible(True)
+        self._place_overlay()
+
+    def _place_overlay(self):
+        w = max(120, min(int(self.width() * 0.45), 480))
+        self.overlay.setFixedWidth(w)
+        self.overlay.adjustSize()
+        self.overlay.move(self.width() - self.overlay.width() - 10, 10)
+        self.overlay.raise_()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.overlay.isVisible():
+            self._place_overlay()
 
     # --- OpenGL ---
     def initializeGL(self):

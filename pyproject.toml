@@ -14,9 +14,6 @@ dependencies = [
     "requests",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest"]
-
 [project.scripts]
 flightlogger = "flightlogger.__main__:main"
 
@@ -26,9 +23,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["flightlogger*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 flightlogger = ["resources/*.svg", "log/*.md"]

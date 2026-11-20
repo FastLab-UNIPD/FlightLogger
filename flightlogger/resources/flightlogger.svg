@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- FlightLogger logo: the OmniQuadGUI drone (X-frame, four rotors, hub)
-       in lavender, flying above a flight-log graph with a time cursor. -->
+  <!-- FlightLogger logo: the OmniQuadGUI drone (X-frame, four rotors, hub), upright and
+       centred, with its hub on the trace of a flight-log graph that climbs
+       diagonally behind it; the time cursor drops from the hub. -->
   <defs>
     <linearGradient id="fl-area" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#9b87e0" stop-opacity="0.50"/>
@@ -10,28 +11,26 @@
       <stop offset="0" stop-color="#8670d4"/>
       <stop offset="1" stop-color="#d4caf7"/>
     </linearGradient>
-    <clipPath id="fl-plot"><rect x="34" y="132" width="188" height="86" rx="6"/></clipPath>
+    <clipPath id="fl-plot"><rect x="40" y="68" width="176" height="136" rx="8"/></clipPath>
   </defs>
 
   <rect x="8" y="8" width="240" height="240" rx="52" fill="#2b2b2b"/>
 
-  <!-- graph: grid, filled trace, cursor -->
-  <g stroke="#3a3645" stroke-width="2">
-    <line x1="40" y1="212" x2="216" y2="212"/>
-    <line x1="40" y1="186" x2="216" y2="186"/>
-    <line x1="40" y1="160" x2="216" y2="160"/>
+  <!-- layers, back to front: graph grid + fill, drone frame, graph trace + cursor, drone hub -->
+  <g transform="translate(128 128) scale(1.22) translate(-128 -128)">
+    <g stroke="#3a3645" stroke-width="2">
+      <line x1="44" y1="200" x2="212" y2="200"/>
+      <line x1="44" y1="166" x2="212" y2="166"/>
+      <line x1="44" y1="132" x2="212" y2="132"/>
+      <line x1="44" y1="98" x2="212" y2="98"/>
+      <line x1="44" y1="72" x2="212" y2="72"/>
+    </g>
+    <g clip-path="url(#fl-plot)">
+      <path d="M44 182.0 C45.3 182.0 49.3 182.9 52 182.1 C54.7 181.3 57.3 177.9 60 177.2 C62.7 176.5 65.3 178.8 68 177.8 C70.7 176.8 73.0 172.2 76 171.1 C79.0 170.0 83.0 172.8 86 171.3 C89.0 169.9 91.3 164.8 94 162.4 C96.7 160.1 99.3 159.7 102 157.2 C104.7 154.7 107.3 149.8 110 147.3 C112.7 144.8 115.7 144.5 118 142.1 C120.3 139.7 122.3 135.2 124 132.9 C125.7 130.6 126.3 129.2 128 128.0 C129.7 126.8 132.0 127.5 134 125.7 C136.0 124.0 137.7 118.8 140 117.5 C142.3 116.2 145.3 119.0 148 117.7 C150.7 116.4 153.7 111.2 156 109.8 C158.3 108.4 159.7 110.5 162 109.2 C164.3 107.9 167.3 103.2 170 101.8 C172.7 100.4 175.3 102.5 178 101.0 C180.7 99.5 183.3 94.8 186 93.1 C188.7 91.4 191.3 92.0 194 90.6 C196.7 89.2 199.0 86.3 202 84.5 C205.0 82.7 210.3 80.8 212 80.0 L212 206 L44 206 Z" fill="url(#fl-area)"/>
+    </g>
   </g>
-  <g clip-path="url(#fl-plot)">
-    <path d="M40 204 C56 203 62 182 78 184 S98 206 114 196 S134 160 152 168 S178 190 192 168 S208 146 216 144 L216 220 L40 220 Z"
-          fill="url(#fl-area)"/>
-  </g>
-  <path d="M40 204 C56 203 62 182 78 184 S98 206 114 196 S134 160 152 168 S178 190 192 168 S208 146 216 144"
-        fill="none" stroke="url(#fl-line)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="152" y1="140" x2="152" y2="214" stroke="#e9e4ff" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
-  <circle cx="152" cy="168" r="7" fill="#2b2b2b" stroke="#e9e4ff" stroke-width="3"/>
 
-  <!-- drone from the OmniQuadGUI logo, scaled and recoloured -->
-  <g transform="translate(128 82) scale(0.56) translate(-128 -128)">
+  <g transform="translate(128 128) scale(0.9) translate(-128 -128)">
     <g stroke="#9b87e0" stroke-width="14" stroke-linecap="round">
       <line x1="82" y1="82" x2="174" y2="174"/>
       <line x1="174" y1="82" x2="82" y2="174"/>
@@ -48,6 +47,15 @@
       <circle cx="70" cy="186" r="8"/>
       <circle cx="186" cy="186" r="8"/>
     </g>
+  </g>
+
+  <g transform="translate(128 128) scale(1.22) translate(-128 -128)">
+    <line x1="128" y1="134" x2="128" y2="202" stroke="#e9e4ff" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+    <path d="M44 182.0 C45.3 182.0 49.3 182.9 52 182.1 C54.7 181.3 57.3 177.9 60 177.2 C62.7 176.5 65.3 178.8 68 177.8 C70.7 176.8 73.0 172.2 76 171.1 C79.0 170.0 83.0 172.8 86 171.3 C89.0 169.9 91.3 164.8 94 162.4 C96.7 160.1 99.3 159.7 102 157.2 C104.7 154.7 107.3 149.8 110 147.3 C112.7 144.8 115.7 144.5 118 142.1 C120.3 139.7 122.3 135.2 124 132.9 C125.7 130.6 126.3 129.2 128 128.0 C129.7 126.8 132.0 127.5 134 125.7 C136.0 124.0 137.7 118.8 140 117.5 C142.3 116.2 145.3 119.0 148 117.7 C150.7 116.4 153.7 111.2 156 109.8 C158.3 108.4 159.7 110.5 162 109.2 C164.3 107.9 167.3 103.2 170 101.8 C172.7 100.4 175.3 102.5 178 101.0 C180.7 99.5 183.3 94.8 186 93.1 C188.7 91.4 191.3 92.0 194 90.6 C196.7 89.2 199.0 86.3 202 84.5 C205.0 82.7 210.3 80.8 212 80.0" fill="none" stroke="#2b2b2b" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+    <path d="M44 182.0 C45.3 182.0 49.3 182.9 52 182.1 C54.7 181.3 57.3 177.9 60 177.2 C62.7 176.5 65.3 178.8 68 177.8 C70.7 176.8 73.0 172.2 76 171.1 C79.0 170.0 83.0 172.8 86 171.3 C89.0 169.9 91.3 164.8 94 162.4 C96.7 160.1 99.3 159.7 102 157.2 C104.7 154.7 107.3 149.8 110 147.3 C112.7 144.8 115.7 144.5 118 142.1 C120.3 139.7 122.3 135.2 124 132.9 C125.7 130.6 126.3 129.2 128 128.0 C129.7 126.8 132.0 127.5 134 125.7 C136.0 124.0 137.7 118.8 140 117.5 C142.3 116.2 145.3 119.0 148 117.7 C150.7 116.4 153.7 111.2 156 109.8 C158.3 108.4 159.7 110.5 162 109.2 C164.3 107.9 167.3 103.2 170 101.8 C172.7 100.4 175.3 102.5 178 101.0 C180.7 99.5 183.3 94.8 186 93.1 C188.7 91.4 191.3 92.0 194 90.6 C196.7 89.2 199.0 86.3 202 84.5 C205.0 82.7 210.3 80.8 212 80.0" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(128 128) scale(0.9) translate(-128 -128)">
     <circle cx="128" cy="128" r="24" fill="#f2f2f2"/>
     <circle cx="128" cy="128" r="10" fill="#9b87e0"/>
   </g>

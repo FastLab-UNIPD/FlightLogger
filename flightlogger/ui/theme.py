@@ -11,6 +11,7 @@ this theme; without it FlightLogger keeps the plain system/Flight Review look
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pyqtgraph as pg
@@ -48,11 +49,17 @@ ICON_PRIMARY = "#ffffff"
 ICON_DISABLED = "#5a5a5a"
 
 _active = False
+_mode = "dark"
+
+
+def is_themed() -> bool:
+    """True once apply_theme() ran (dark or light)."""
+    return _active
 
 
 def is_dark() -> bool:
-    """True once apply_theme() ran (graph code adapts its colours)."""
-    return _active
+    """True when the dark theme is active (graph code adapts its colours)."""
+    return _active and _mode == "dark"
 
 
 def logo_icon() -> QIcon:
@@ -60,7 +67,8 @@ def logo_icon() -> QIcon:
 
 
 # --- stylesheet --------------------------------------------------------------------------
-QSS = f"""
+def _qss() -> str:
+    return f"""
 QWidget {{
     background-color: {BG};
     color: {TEXT};
@@ -264,7 +272,8 @@ QProgressBar::chunk {{ background-color: {ACCENT}; border-radius: 5px; }}
 # Qt Advanced Docking System: dock areas become rounded "cards" with
 # OmniQuad-style upper-case titles; the active tab gets a lavender underline.
 R = RESOURCES.as_posix()
-ADS_QSS = f"""
+def _ads_qss() -> str:
+    return f"""
 ads--CDockContainerWidget {{ background: {BG}; }}
 ads--CDockContainerWidget > QSplitter {{ padding: 2px; }}
 ads--CDockContainerWidget ads--CDockSplitter::handle {{ background: {BG}; }}
@@ -328,11 +337,13 @@ def _palette() -> QPalette:
     p = QPalette()
     roles = {
         QPalette.Window: BG, QPalette.WindowText: TEXT, QPalette.Base: WELL,
-        QPalette.AlternateBase: "#1c1c1c", QPalette.Text: TEXT, QPalette.Button: SURFACE,
+        QPalette.AlternateBase: _x("#1c1c1c", "#f0eef5"), QPalette.Text: TEXT, QPalette.Button: SURFACE,
         QPalette.ButtonText: TEXT, QPalette.Highlight: ACCENT, QPalette.HighlightedText: "#ffffff",
         QPalette.ToolTipBase: SURFACE, QPalette.ToolTipText: TEXT, QPalette.Link: ACCENT_LIGHT,
-        QPalette.PlaceholderText: "#6f6f6f", QPalette.Light: "#3a3a3a", QPalette.Midlight: "#333333",
-        QPalette.Mid: "#2e2e2e", QPalette.Dark: "#141414", QPalette.Shadow: "#000000",
+        QPalette.PlaceholderText: _x("#6f6f6f", "#9a9aa6"), QPalette.Light: _x("#3a3a3a", "#f5f4f9"),
+        QPalette.Midlight: _x("#333333", "#e6e4ec"),
+        QPalette.Mid: _x("#2e2e2e", "#c4c0cf"), QPalette.Dark: _x("#141414", "#a9a5b6"),
+        QPalette.Shadow: "#000000",
     }
     for role, color in roles.items():
         p.setColor(role, QColor(color))
@@ -341,10 +352,50 @@ def _palette() -> QPalette:
     return p
 
 
-def apply_theme(app):
-    """Switch the application to the lavender dark theme (call before windows exist)."""
+_DARK_PALETTE = dict(
+    BG="#1e1e1e", SURFACE="#272727", BORDER="#383838", WELL="#171717", TEXT="#f2f2f2",
+    DIM="#a3a3a3", DISABLED="#5f5f5f", ACCENT="#9b87e0", ACCENT_LIGHT="#c8bcf2",
+    ACCENT_TOP="#ad9cec", ACCENT_BOTTOM="#8670d4", ACCENT_EDGE="#6f5bbf", ACCENT_HOVER="#8d7fc4",
+    PLOT_BG="#1a1a1a", PLOT_FG="#a3a3a3", PLOT_TEXT="#f2f2f2",
+    ICON_NEUTRAL="#c8bcf2", ICON_PRIMARY="#ffffff", ICON_DISABLED="#5a5a5a")
+_LIGHT_PALETTE = dict(
+    BG="#dcdae4", SURFACE="#eceaf1", BORDER="#bdb9c9", WELL="#f7f6fa", TEXT="#202026",
+    DIM="#5f5f6c", DISABLED="#9d9aa8", ACCENT="#7d65d1", ACCENT_LIGHT="#5f47b8",
+    ACCENT_TOP="#8f7ae0", ACCENT_BOTTOM="#7058c8", ACCENT_EDGE="#5e48b0", ACCENT_HOVER="#8f7dd0",
+    PLOT_BG="#f8f7fb", PLOT_FG="#4f4f5a", PLOT_TEXT="#202026",
+    ICON_NEUTRAL="#5f47b8", ICON_PRIMARY="#ffffff", ICON_DISABLED="#a29fae")
+# colours written literally in the stylesheets -> their light counterparts
+_LIGHT_LITERALS = {
+    "#2e2e2e": "#eceaf1", "#262626": "#e1dfe8", "#3a3a3a": "#f5f4f9", "#313131": "#e4e2ec",
+    "#474747": "#b9b5c6", "#444444": "#fbfafd", "#393939": "#dedce6", "#2a2a2a": "#d3d0de",
+    "#333333": "#d9d6e2", "#252525": "#e0dee8", "#303030": "#cfccda", "#3c3c3c": "#c9c5d4",
+    "#3d3d3d": "#c4c0cf", "#323232": "#e0dee8", "#222222": "#d6d3df", "#1c1c1c": "#eceaf1",
+    "#151515": "#b4b0c0", "#8f8f8f": "#5f5f6c", "#555555": "#8f8c9c", "#f2f2f2": "#202026",
+    "rgba(255, 255, 255, 0.10)": "rgba(0, 0, 0, 0.07)",
+    "rgba(255, 255, 255, 0.04)": "rgba(0, 0, 0, 0.04)",
+}
+_LIT_RE = re.compile("|".join(re.escape(k) for k in _LIGHT_LITERALS))
+
+
+def _x(dark, light):
+    return dark if _mode == "dark" else light
+
+
+def set_mode(mode: str):
+    """Pick the palette ('dark' or 'light') and build the stylesheets from it."""
+    global _mode, QSS, ADS_QSS
+    _mode = "light" if mode == "light" else "dark"
+    globals().update(_LIGHT_PALETTE if _mode == "light" else _DARK_PALETTE)
+    QSS, ADS_QSS = _qss(), _ads_qss()
+    if _mode == "light":
+        QSS, ADS_QSS = (_LIT_RE.sub(lambda m: _LIGHT_LITERALS[m.group(0)], t) for t in (QSS, ADS_QSS))
+
+
+def apply_theme(app, mode: str = "dark"):
+    """Switch the application to the lavender theme, dark or light (call before windows exist)."""
     global _active
     _active = True
+    set_mode(mode)
     app.setStyle("Fusion")
     app.setPalette(_palette())
     app.setStyleSheet(QSS)
@@ -360,13 +411,13 @@ _DARK_SWAPS = {"#000000": "#e6e6e6", "#464646": "#a0a0a0", "k": "#d0d0d0", "#555
 
 
 def plot_color(color: str) -> str:
-    if not _active:
+    if not is_dark():
         return color
     return _DARK_SWAPS.get(color.lower() if isinstance(color, str) else color, color)
 
 
 def legend_style() -> dict:
-    if _active:
+    if is_dark():
         return {"brush": pg.mkBrush(30, 30, 30, 225), "pen": pg.mkPen(BORDER),
                 "labelTextColor": TEXT}
     return {"brush": pg.mkBrush(255, 255, 255, 215), "pen": pg.mkPen(200, 200, 200)}
@@ -388,12 +439,15 @@ def style_role(widget, role: str, fallback_css: str = ""):
 
 def mode_alpha(base: int) -> int:
     """Flight-mode shading: colours look much stronger on a dark background."""
-    return int(base * 0.55) if _active else base
+    return int(base * 0.55) if is_dark() else base
 
 
 def row_tint(color) -> "QColor":
     """Table row highlight (warnings/errors): translucent on the dark theme."""
     c = QColor(color)
-    if _active:
+    if is_dark():
         c.setAlpha(45)
     return c
+
+
+set_mode("dark")   # defines QSS / ADS_QSS; apply_theme() picks the real mode

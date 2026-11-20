@@ -4,3 +4,13 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 *.ulg
+
+# personal data: logs, videos and project files hold local paths and flight data
+*.flproj
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.MP4
+*.MOV
+FlightLogger Development Data/

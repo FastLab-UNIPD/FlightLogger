@@ -12,14 +12,19 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("FlightLogger")
     app.setDesktopFileName("flightlogger")
-    apply_theme(app)  # before any window or graph exists
+    from .project import Settings
+
+    apply_theme(app, Settings().get("theme", "dark"))  # before any window or graph exists
 
     from .app import MainWindow
 
     win = MainWindow()
-    win.show()
+    win.showMaximized()
     if len(sys.argv) > 1:
-        win.open_log(sys.argv[1])
+        if sys.argv[1].lower().endswith(".flproj"):
+            win.open_project(sys.argv[1])
+        else:
+            win.open_log(sys.argv[1])
     return app.exec()
 
 

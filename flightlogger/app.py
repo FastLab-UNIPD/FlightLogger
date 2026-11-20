@@ -1,13 +1,14 @@
 """Main window: dock layout, menus, transport bar, keyboard handling, log loading."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
                                QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QPlainTextEdit, QProgressDialog, QTextEdit, QToolBar)
+                               QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QSizePolicy, QWidget, QTextEdit, QToolBar, QToolButton)
 
 from .log.flight_review import DownloadCancelled, LinkError, download_log, parse_link
 from .log.ulog_loader import FlightLog
@@ -19,6 +20,7 @@ from .playback import SPEED_PRESETS, Playback
 from .sync import Sync
 from .plots.common import MESSAGE_FILTERS, filter_messages, fmt_time
 from .plots.graph_panel import GraphPanel
+from .undo import UndoManager
 from .plots.timeline import TimelineWidget
 from .timebus import TimeBus
 from .ui import dock_host as dh
@@ -31,6 +33,18 @@ from .video.mpv_widget import VIDEO_EXTENSIONS
 from .video.video_panel import VideoPanel
 
 STEP_SMALL, STEP_MEDIUM, STEP_LARGE = 0.1, 1.0, 10.0
+
+# Quick graph groups for "New graph panel" (Flight Review graph ids; missing ones are skipped)
+GRAPH_PRESETS = {
+    "Positions": ["altitude_estimate", "local_position_x", "local_position_y", "local_position_z"],
+    "Angles": ["roll_angle", "pitch_angle", "yaw_angle"],
+    "Angular rates": ["roll_angular_rate", "pitch_angular_rate", "yaw_angular_rate"],
+    "Velocity and inputs": ["velocity", "manual_control_inputs_radio_or_joystick"],
+    "Actuators": ["actuator_controls", "motor_outputs", "servo_outputs"],
+    "Raw sensors": ["raw_acceleration", "raw_angular_speed_gyroscope", "raw_magnetic_field_strength",
+                    "vibration_metrics"],
+    "Power and system": ["power", "temperature", "cpu_ram"],
+}
 
 
 class _LoadThread(QThread):
@@ -113,6 +127,15 @@ class _KeyFilter(QObject):
             w.video_panel.exit_fullscreen()
         elif key == Qt.Key_N and not mods:
             w.add_note()
+        elif key == Qt.Key_N and mods == Qt.ControlModifier:
+            w.notes_panel.set_end_at_cursor()
+        elif key == Qt.Key_Delete and not mods and w.delete_selected():
+            pass
+        elif key == Qt.Key_Z and mods == Qt.ControlModifier:
+            w.undo()
+        elif key == Qt.Key_Z and mods == (Qt.ControlModifier | Qt.ShiftModifier) \
+                or key == Qt.Key_Y and mods == Qt.ControlModifier:
+            w.redo()
         elif key == Qt.Key_BracketLeft:
             w.clock.slower()
         elif key == Qt.Key_BracketRight:
@@ -130,6 +153,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlightLogger")
+        self.setMinimumSize(1100, 700)
         self.resize(1500, 900)
         self.bus = TimeBus(self)
         self.clock = Playback(self.bus, self)
@@ -137,6 +161,7 @@ class MainWindow(QMainWindow):
         self.panels: dict[str, tuple[GraphPanel, object]] = {}
         self.active_panel: GraphPanel | None = None
         self._panel_seq = 0
+        self.undo_mgr = UndoManager(self)
         self._loader: _LoadThread | None = None
         self.notes = NotesModel(self)
         self.layouts = LayoutStore()
@@ -165,7 +190,13 @@ class MainWindow(QMainWindow):
         self.params = ParamsTable()
         self.video_panel = VideoPanel(self.bus, self.clock)
         self.video_panel.openRequested.connect(self.open_video_dialog)
+        self.video_panel.overlayRequested.connect(
+            lambda kind, on: (self.video_notes_act if kind == "notes" else self.video_msgs_act).setChecked(on))
+        self.video_panel.notes_source = lambda: self.notes.notes
+        self.video_panel.messages_source = self._video_messages
         self.notes_panel = NotesPanel(self.bus, self.notes)
+        self.notes_panel.exportRequested.connect(self.export_notes_dialog)
+        self.timeline.contextRequested.connect(self._timeline_menu)
 
         panel_dw = self._create_panel_dock()
         self.graphs_dw = self.docks.make(self.graph_list, "Graphs", "graphs")
@@ -191,8 +222,8 @@ class MainWindow(QMainWindow):
         self.graphs_dw.setAsCurrentTab()
         self.notes_dw.setAsCurrentTab()
         self.docks.mgr.setSplitterSizes(timeline_area, [800, 110])
-        self.docks.mgr.setSplitterSizes(center, [520, 700, 340])
-        self.docks.mgr.setSplitterSizes(left, [440, 380])
+        self.docks.mgr.setSplitterSizes(center, [680, 600, 320])
+        self.docks.mgr.setSplitterSizes(left, [560, 300])
         self.docks.mgr.setSplitterSizes(right, [380, 420])
         # bring torn-off windows to the front (some window managers keep a
         # window opened without direct user input behind the active one)
@@ -209,6 +240,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.notes.changed.connect(self._on_notes_changed)
+        self.undo_mgr.reset()
         self.clock.offsetChanged.connect(lambda _o: self._set_dirty(True))
         self._default_layout = self.capture_layout()
         self._update_title()
@@ -234,12 +266,45 @@ class MainWindow(QMainWindow):
         panel.set_notes(self.notes.notes)
         panel.set_messages(self._visible_messages())
         panel.activated.connect(self._set_active)
+        panel.isolateRequested.connect(self.isolate_plot)
+        panel.previews = self.timeline.previews
         panel.changed.connect(lambda p=panel: self._on_panel_changed(p))
         dw = self.docks.make(panel, title, pid, deletable=True)
         dw.closed.connect(lambda pid=pid: self._on_panel_closed(pid))
         self.panels[pid] = (panel, dw)
         self.active_panel = panel
         return dw
+
+    def _build_panel_menu(self, menu: QMenu) -> QMenu:
+        menu.setIcon(icons.icon("graph"))
+        menu.addAction(QAction(icons.icon("graph"), "Empty panel", self, shortcut="Ctrl+G",
+                               triggered=lambda: self.new_panel()))
+        menu.addSeparator()
+        for name in GRAPH_PRESETS:
+            menu.addAction(name, lambda name=name: self.new_preset_panel(name))
+        return menu
+
+    def new_preset_panel(self, name: str):
+        panel = self.new_panel()
+        if self.log is not None:
+            for gid in GRAPH_PRESETS[name]:
+                if gid in self.log.graphs:
+                    panel.add_graph(gid)
+        self._set_active(panel)
+        return panel
+
+    def isolate_plot(self, plot):
+        """Open a copy of a plot in its own landscape floating window (always a fresh window,
+        whatever panel is active)."""
+        dw = self._create_panel_dock()
+        panel = self.panels[dw.objectName()][0]
+        panel.load_plots([plot.to_dict()])
+        panel.set_plot_height("L")
+        fc = self.docks.mgr.addDockWidgetFloating(dw)
+        fc.resize(1000, 480)
+        fc.move(self.geometry().center() - fc.rect().center())
+        self._set_active(panel)
+        return panel
 
     def new_panel(self):
         """New graph panel, placed side by side with the active one."""
@@ -259,12 +324,14 @@ class MainWindow(QMainWindow):
             self.graph_list.sync(panel)
 
     def _on_panel_changed(self, panel: GraphPanel):
+        self.undo_mgr.on_panel_changed(panel)
         self._set_dirty(True)
         if panel is self.active_panel:
             self.graph_list.sync(panel)
 
     def _on_panel_closed(self, pid: str):
         panel, _ = self.panels.pop(pid, (None, None))
+        self.undo_mgr.forget_panel(pid)
         if panel is self.active_panel:
             self.active_panel = next((p for p, _ in self.panels.values()), None)
             self.graph_list.sync(self.active_panel)
@@ -333,15 +400,76 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.speed_box)
         tb.addSeparator()
         self.time_label = QLabel(objectName="timeLabel")
-        if not theme.is_dark():
+        if not theme.is_themed():
             self.time_label.setStyleSheet("font-family: monospace; font-size: 13px; padding: 0 8px;")
         tb.addWidget(self.time_label)
+
+        # second row: file / edit commands, with words so they are clear
+        self.addToolBarBreak(Qt.TopToolBarArea)
+        ab = QToolBar("Actions")
+        ab.setObjectName("actions")
+        self.addToolBar(Qt.TopToolBarArea, ab)
+        ab.setIconSize(QSize(18, 18))
+        ab.setMovable(False)
+        ab.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+
+        def aact(icon_name, text, tip, slot):
+            a = ab.addAction(icons.icon(icon_name), text, slot)
+            a.setToolTip(tip)
+            return a
+
+        aact("log", "Open log", "Open a flight log (Ctrl+O)", self.open_log_dialog)
+        aact("film", "Open video", "Open a video (Ctrl+Shift+O)", self.open_video_dialog)
+        aact("folder", "Open project", "Open a project file (Ctrl+Shift+P)", self.open_project_dialog)
+        aact("save", "Save", "Save the project (Ctrl+S)", lambda: self.save_project())
+        ab.addSeparator()
+        self.undo_act = aact("undo", "Undo", "Undo the last change to notes or plots (Ctrl+Z)", self.undo)
+        self.redo_act = aact("redo", "Redo", "Redo (Ctrl+Shift+Z or Ctrl+Y)", self.redo)
+        self.update_undo_actions(False, False)
+        ab.addSeparator()
+        panel_btn = QToolButton(text="New panel  ▾", toolTip="New graph panel: empty (Ctrl+G) or a preset group")
+        icons.decorate(panel_btn, "graph")
+        panel_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        panel_btn.setPopupMode(QToolButton.InstantPopup)
+        panel_btn.setMenu(self._build_panel_menu(QMenu(self)))
+        ab.addWidget(panel_btn)
+        aact("edit", "Edit plot", "Edit the selected (last clicked) plot: colors, thickness, "
+             "line style", self.edit_selected_plot)
+        aact("note", "Add note", "Add a note at the cursor (N)", self.add_note)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setStyleSheet("background: transparent;")
+        ab.addWidget(spacer)
+        light_now = theme.is_themed() and not theme.is_dark()
+        aact("moon" if light_now else "sun", "Dark mode" if light_now else "Light mode",
+             "Switch the theme (the app restarts, asking to save first)",
+             lambda: self._set_theme("dark" if light_now else "light"))
 
         self.clock.playingChanged.connect(
             lambda p: self.play_act.setIcon(icons.icon("pause" if p else "play", "primary")))
         self.clock.speedChanged.connect(self._on_speed)
         self.bus.timeChanged.connect(self._update_time_label)
         self._update_time_label(0.0)
+
+    def undo(self):
+        self.undo_mgr.undo()
+
+    def redo(self):
+        self.undo_mgr.redo()
+
+    def update_undo_actions(self, can_undo: bool, can_redo: bool):
+        self.undo_act.setEnabled(can_undo)
+        self.redo_act.setEnabled(can_redo)
+
+    def edit_selected_plot(self):
+        from .plots.graph_panel import highlighted_plot
+        plot = highlighted_plot()
+        if plot is None and self.active_panel is not None and self.active_panel.plots:
+            plot = self.active_panel.plots[0]
+        if plot is None:
+            self.statusBar().showMessage("Click a plot first, then press Edit plot", 4000)
+            return
+        plot.edit()
 
     def _on_speed(self, s: float):
         i = self.speed_box.findData(s)
@@ -371,12 +499,12 @@ class MainWindow(QMainWindow):
                             triggered=lambda: self.save_project()))
         m.addAction(QAction("Save project &as…", self, shortcut="Ctrl+Shift+S",
                             triggered=lambda: self.save_project(ask=True)))
+        m.addAction(QAction("&Export notes as text…", self, triggered=self.export_notes_dialog))
         m.addSeparator()
         m.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
 
         v = self.menuBar().addMenu("&View")
-        v.addAction(QAction(icons.icon("graph"), "New &graph panel", self, shortcut="Ctrl+G",
-                            triggered=self.new_panel))
+        v.addMenu(self._build_panel_menu(QMenu("New &graph panel", self)))
         v.addAction(QAction(icons.icon("note"), "Add &note at cursor", self,
                             triggered=self.add_note))  # key: N
         self.layout_menu = v.addMenu(icons.icon("layout"), "&Layouts")
@@ -392,6 +520,37 @@ class MainWindow(QMainWindow):
             group.addAction(a)
             a.triggered.connect(lambda _c=False, mode=mode: self.set_message_mode(mode))
             self._message_actions[mode] = a
+        def toggle(text, key, default, slot):
+            a = QAction(text, self, checkable=True)
+            a.setChecked(bool(self.settings.get(key, default)))
+            a.toggled.connect(lambda on: (self.settings.set(key, bool(on)), slot(bool(on))))
+            v.addAction(a)
+            slot(a.isChecked())
+            return a
+
+        self.previews_act = toggle("Note &previews on hover", "note_previews", True,
+                                   self._set_previews)
+        self.video_notes_act = toggle("Show &notes over the video", "video_notes", False,
+                                      lambda on: self.video_panel.set_overlay(notes=on))
+        self.video_msgs_act = toggle("Show log &messages over the video", "video_messages", False,
+                                     lambda on: self.video_panel.set_overlay(messages=on))
+        self.markers_act = toggle("Notes and warnings on the video &bar", "video_markers", True,
+                                  self.video_panel.set_show_markers)
+        self.timeline_msgs_act = QAction("Show warnings on the &timeline", self, checkable=True)
+        self.timeline_msgs_act.setChecked(bool(self.settings.get("timeline_messages", True)))
+        for layer in ("notes", "events", "modes"):
+            self.timeline.layer_visible[layer] = bool(self.settings.get(f"timeline_{layer}", True))
+        self.timeline_msgs_act.toggled.connect(self._on_timeline_msgs_toggled)
+        v.addAction(self.timeline_msgs_act)
+        theme_menu = v.addMenu("&Theme")
+        tgroup = QActionGroup(theme_menu)
+        current = self.settings.get("theme", "dark")
+        for mode, label in (("dark", "Dark"), ("light", "Light")):
+            a = theme_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(mode == current)
+            tgroup.addAction(a)
+            a.triggered.connect(lambda _c=False, mode=mode: self._set_theme(mode))
         v.addSeparator()
         for dw in self._fixed_docks:
             v.addAction(dw.toggleViewAction())
@@ -465,6 +624,7 @@ class MainWindow(QMainWindow):
         self.graph_list.sync(self.active_panel)
         self.bus.set_x_range(0.0, log.duration, None)
         self.status.setText(log.describe())
+        self.undo_mgr.reset()
         self._update_title()
         if self._after_load is not None:
             cb, self._after_load = self._after_load, None
@@ -508,11 +668,30 @@ class MainWindow(QMainWindow):
         self.notes_dw.setAsCurrentTab()
         return self.notes_panel.add_at_cursor()
 
+    def delete_selected(self) -> bool:
+        """Canc: the selected note if the notes panel has focus, else the highlighted plot."""
+        from .plots.graph_panel import highlighted_plot
+        fw = QApplication.focusWidget()
+        in_notes = fw is not None and self.notes_panel.isAncestorOf(fw)
+        plot = highlighted_plot()
+        if plot is not None and not in_notes:
+            for panel, _ in self.panels.values():
+                if plot in panel.plots:
+                    panel.remove_plot(plot)
+                    return True
+        if self.notes_panel.has_selection():
+            self.notes_panel.delete_current()
+            return True
+        return False
+
     def _on_notes_changed(self):
         notes = self.notes.notes
         for panel, _ in self.panels.values():
             panel.set_notes(notes)
         self.timeline.set_notes(notes)
+        self.video_panel.update_overlay()
+        self.video_panel.update_markers()
+        self.undo_mgr.on_notes_changed()
         self._set_dirty(True)
 
     # --- dirty state / title ---
@@ -745,6 +924,7 @@ class MainWindow(QMainWindow):
             if video_path:
                 self.open_video(video_path)
             self.recent.add(self.project_path)
+            self.undo_mgr.reset()
             self._set_dirty(False)
             self._update_title()
 
@@ -817,10 +997,76 @@ class MainWindow(QMainWindow):
         return filter_messages(self.log.messages(), self.message_mode) if self.log else []
 
     def _apply_messages(self):
+        self.video_panel.update_markers()
         msgs = self._visible_messages()
         for panel, _ in self.panels.values():
             panel.set_messages(msgs)
-        self.timeline.set_messages(msgs)
+        self.timeline.set_messages(msgs if self.timeline_msgs_act.isChecked() else [])
+
+    def _timeline_menu(self, pos):
+        m = QMenu(self)
+        m.addAction(self.timeline_msgs_act)
+        for layer, label in (("notes", "Show notes"), ("events", "Show flight events"),
+                             ("modes", "Show flight modes")):
+            a = m.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(self.timeline.layer_visible[layer])
+            a.toggled.connect(lambda on, layer=layer: self._on_timeline_layer(layer, on))
+        m.addSeparator()
+        m.addAction("Add note at cursor", self.add_note)
+        m.exec(pos)
+
+    def _on_timeline_layer(self, layer: str, on: bool):
+        self.settings.set(f"timeline_{layer}", bool(on))
+        self.timeline.set_layer_visible(layer, on)
+
+    def _set_theme(self, mode: str):
+        """Save the theme and restart the app (after the usual unsaved-changes prompt)."""
+        if mode == ("dark" if theme.is_dark() else "light"):
+            return
+        previous = self.settings.get("theme", "dark")
+        args = [str(self.project_path)] if self.project_path else (
+            [str(self.log.path)] if self.log else [])
+        self.settings.set("theme", mode)
+        if self.close():
+            QProcess.startDetached(sys.executable, ["-m", "flightlogger", *args],
+                                   str(Path(__file__).resolve().parents[1]))
+        else:
+            self.settings.set("theme", previous)
+
+    def _set_previews(self, on: bool):
+        self.timeline.previews = on
+        for panel, _ in self.panels.values():
+            panel.previews = on
+
+    def _video_messages(self):
+        mode = "warnings" if self.message_mode == "off" else self.message_mode
+        return filter_messages(self.log.messages(), mode) if self.log else []
+
+    def _on_timeline_msgs_toggled(self, on: bool):
+        self.settings.set("timeline_messages", bool(on))
+        self._apply_messages()
+
+    def export_notes_dialog(self):
+        if not len(self.notes):
+            QMessageBox.information(self, "Export notes", "There are no notes to export.")
+            return
+        start = str((self.log.path.parent if self.log else Path.cwd()) / "notes.txt")
+        path, _ = QFileDialog.getSaveFileName(self, "Export notes", start, "Text files (*.txt)")
+        if path:
+            self.export_notes(path)
+
+    def export_notes(self, path: str):
+        lines = []
+        for n in self.notes.notes:
+            when = "General" if n.general else (
+                fmt_time(n.t, 1) + ("" if n.t_end is None else f" – {fmt_time(n.t_end, 1)}"))
+            lines.append(f"[{when}] {n.category}: {n.title}")
+            if n.text.strip():
+                lines += ["    " + l for l in n.text.strip().splitlines()]
+            lines.append("")
+        Path(path).write_text("\n".join(lines), encoding="utf-8")
+        self.statusBar().showMessage(f"Exported {len(self.notes)} notes to {path}", 5000)
 
     def set_message_mode(self, mode: str):
         if mode not in MESSAGE_FILTERS:

@@ -38,6 +38,10 @@ SVG = {
     "sync": '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/>'
             '<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/>',
     "target": f'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" {_FILL}/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>',
+    "moon": '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+    "redo": '<path d="M20 10H9a5 5 0 0 0 0 10h6"/><path d="M16 6l4 4-4 4"/>',
+    "edit": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/>',
     "undo": '<path d="M4 10h11a5 5 0 0 1 0 10H9"/><path d="M8 6l-4 4 4 4"/>',
     # graphs
     "plus": '<path d="M12 5v14M5 12h14"/>',
@@ -77,7 +81,7 @@ def _render(name: str, color: str, px: int) -> QPixmap:
 
 
 def _colors(variant: str) -> tuple[str, str]:
-    if theme.is_dark():
+    if theme.is_themed():
         normal = theme.ICON_PRIMARY if variant == "primary" else theme.ICON_NEUTRAL
         return normal, theme.ICON_DISABLED
     return ("#ffffff" if variant == "primary" else "#3c3c3c"), "#a8a8a8"
@@ -85,7 +89,7 @@ def _colors(variant: str) -> tuple[str, str]:
 
 def icon(name: str, variant: str = "neutral", checkable: bool = False) -> QIcon:
     """variant 'neutral' or 'primary'; checkable: white icon while checked."""
-    key = (name, variant, checkable, theme.is_dark())
+    key = (name, variant, checkable, theme.is_themed(), theme.ICON_NEUTRAL)
     if key in _cache:
         return _cache[key]
     normal, disabled = _colors(variant)
@@ -94,7 +98,7 @@ def icon(name: str, variant: str = "neutral", checkable: bool = False) -> QIcon:
         ic.addPixmap(_render(name, normal, px), QIcon.Normal, QIcon.Off)
         ic.addPixmap(_render(name, disabled, px), QIcon.Disabled, QIcon.Off)
         if checkable:
-            on = theme.ICON_PRIMARY if theme.is_dark() else "#ffffff"
+            on = theme.ICON_PRIMARY if theme.is_themed() else "#ffffff"
             ic.addPixmap(_render(name, on, px), QIcon.Normal, QIcon.On)
             ic.addPixmap(_render(name, disabled, px), QIcon.Disabled, QIcon.On)
     _cache[key] = ic
