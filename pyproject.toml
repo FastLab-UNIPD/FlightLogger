@@ -1,0 +1,31 @@
+[project]
+name = "flightlogger"
+version = "0.1.0"
+description = "PX4 ULog viewer with video sync, Flight Review graphs and timeline notes"
+requires-python = ">=3.10"
+dependencies = [
+    "pyside6>=6.5",
+    "pyside6-qtads>=4.3",
+    "pyqtgraph>=0.13.7",
+    "pyulog>=1.1",
+    "numpy",
+    "scipy",
+    "python-mpv>=1.0",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+flightlogger = "flightlogger.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["flightlogger*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
