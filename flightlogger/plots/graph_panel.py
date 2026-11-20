@@ -73,6 +73,7 @@ class GraphPlot:
         self.signals: list[str] = []          # custom signals (keys)
         self.curves: dict[str, pg.PlotDataItem] = {}
         self.mode_items: list = []
+        self.note_items: list = []
         self._n_legend = 0
         self.stale = True
         if graph is not None:
@@ -175,6 +176,28 @@ class GraphPlot:
     def _update_legend(self):
         self.legend.setColumnCount(2 if self._n_legend > 4 else 1)
         self.legend.setVisible(self._n_legend > 0)
+
+    def set_notes(self, notes):
+        """Timeline notes: dashed line (instant) or shaded band (span)."""
+        for it in self.note_items:
+            self.item.removeItem(it)
+        self.note_items = []
+        if not self.time_based:
+            return
+        for n in notes:
+            color = pg.mkColor(n.color)
+            if n.t_end is None:
+                it = pg.InfiniteLine(n.t, angle=90, movable=False,
+                                     pen=pg.mkPen(color, width=1.5, style=Qt.DashLine))
+            else:
+                fill = pg.mkColor(n.color)
+                fill.setAlpha(45)
+                it = pg.LinearRegionItem((n.t, n.t_end), movable=False, brush=fill,
+                                         pen=pg.mkPen(color, width=1))
+            it.setToolTip(f"{n.category}: {n.title}" + (f"\n{n.text}" if n.text else ""))
+            it.setZValue(-50)
+            self.item.addItem(it, ignoreBounds=True)
+            self.note_items.append(it)
 
     def set_modes(self, segments):
         for it in self.mode_items:
@@ -287,6 +310,9 @@ class GraphPanel(QWidget):
         self.plots: list[GraphPlot] = []
         self._syncing = False
         self._range: tuple[float, float] | None = None
+        self._notes: list = []
+        # plot specs waiting for a log (a layout applied before a log is open)
+        self._pending: list[dict] | None = None
 
         bar = QHBoxLayout()
         bar.setContentsMargins(4, 2, 4, 2)
@@ -355,11 +381,23 @@ class GraphPanel(QWidget):
 
     # --- log ---
     def set_log(self, log: FlightLog | None):
-        specs = [p.to_dict() for p in self.plots]
+        specs = self._pending if self._pending is not None else [p.to_dict() for p in self.plots]
         self.log = log
         self.clear()
         if log is not None:
+            self._pending = None
             self.load_plots(specs)
+        else:
+            self._pending = specs
+
+    @property
+    def has_content(self) -> bool:
+        return bool(self.plots or self._pending)
+
+    def set_notes(self, notes):
+        self._notes = list(notes)
+        for p in self._time_plots():
+            p.set_notes(self._notes)
 
     def clear(self):
         for p in self.plots:
@@ -377,6 +415,7 @@ class GraphPanel(QWidget):
             p.set_modes(self.log.mode_segments())
             if "replay" not in self.log.info:
                 p.set_param_changes(self.log.param_changes())
+        p.set_notes(self._notes)
         self.plots.insert(len(self.plots) if index is None else min(index, len(self.plots)), p)
         if relayout:
             self._relayout()
@@ -587,10 +626,11 @@ class GraphPanel(QWidget):
         self.changed.emit()
 
     def to_dict(self) -> dict:
+        plots = (list(self._pending) if self.log is None and self._pending is not None
+                 else [p.to_dict() for p in self.plots])
         return {"id": self.panel_id, "title": self.title,
                 "link_x": self.link_btn.isChecked(), "follow": self.follow_btn.isChecked(),
-                "height": self.height_box.currentText(),
-                "plots": [p.to_dict() for p in self.plots]}
+                "height": self.height_box.currentText(), "plots": plots}
 
     def load_dict(self, d: dict):
         self.clear()
@@ -598,7 +638,11 @@ class GraphPanel(QWidget):
         self.link_btn.setChecked(d.get("link_x", True))
         self.follow_btn.setChecked(d.get("follow", True))
         self.height_box.setCurrentText(d.get("height", "M"))
-        self.load_plots(d.get("plots", []))
+        if self.log is None:
+            self._pending = list(d.get("plots", []))
+        else:
+            self._pending = None
+            self.load_plots(d.get("plots", []))
 
 
 __all__ = ["GraphPanel", "GraphPlot", "fmt_time"]

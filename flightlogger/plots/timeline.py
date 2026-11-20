@@ -37,6 +37,7 @@ class TimelineWidget(pg.PlotWidget):
         self.cursor.sigDragged.connect(lambda l: self.bus.seek(l.value()))
         pi.addItem(self.cursor, ignoreBounds=True)
         self._static: list = []
+        self._note_items: list = []
         self._updating = False
 
         self.scene().sigMouseClicked.connect(self._on_click)
@@ -84,6 +85,27 @@ class TimelineWidget(pg.PlotWidget):
                                       pen=pg.mkPen(color, width=1, style=Qt.DashLine),
                                       label=ev.label, labelOpts={"position": 0.1, "color": color}))
         self._set_region(0, dur)
+
+    def set_notes(self, notes):
+        pi = self.getPlotItem()
+        for it in self._note_items:
+            pi.removeItem(it)
+        self._note_items = []
+        for n in notes:
+            color = pg.mkColor(n.color)
+            if n.t_end is None:
+                it = pg.InfiniteLine(n.t, angle=90, movable=False, pen=pg.mkPen(color, width=2),
+                                     label=n.title[:24], labelOpts={"position": 0.55, "color": color,
+                                                                    "fill": (255, 255, 255, 190)})
+            else:
+                fill = pg.mkColor(n.color)
+                fill.setAlpha(70)
+                it = pg.LinearRegionItem((n.t, n.t_end), movable=False, brush=fill,
+                                         pen=pg.mkPen(color, width=1))
+            it.setToolTip(f"{n.category}: {n.title}")
+            it.setZValue(5)
+            pi.addItem(it, ignoreBounds=True)
+            self._note_items.append(it)
 
     def _add(self, item):
         self.getPlotItem().addItem(item, ignoreBounds=True)
