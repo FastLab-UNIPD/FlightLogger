@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox,
                                QPushButton, QSizePolicy, QSlider, QStackedLayout, QToolButton,
                                QVBoxLayout, QWidget)
@@ -23,9 +23,74 @@ from ..log.ulog_loader import FlightLog
 from ..playback import Playback
 from ..plots.common import fmt_time
 from ..timebus import TimeBus
+from ..ui import icons, theme
 from .mpv_widget import MpvWidget, mpv_available
 
 SLIDER_RES = 1000  # slider steps per second
+
+
+class MarkerSlider(QSlider):
+    """Video progress bar: a click jumps straight there, and notes / log messages are
+    drawn on it as small ticks (``markers`` = [(video_seconds, QColor, row)], row 0 = notes
+    on the upper half, row 1 = messages on the lower half)."""
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self.markers: list[tuple[float, QColor, int]] = []
+        self.res = SLIDER_RES
+        self._down = False
+
+    def _value_at(self, x: float) -> int:
+        m = 8
+        span = max(1, self.width() - 2 * m)
+        frac = min(1.0, max(0.0, (x - m) / span))
+        return self.minimum() + round(frac * (self.maximum() - self.minimum()))
+
+    def _jump(self, ev):
+        v = self._value_at(ev.position().x())
+        self.setValue(v)
+        self.sliderMoved.emit(v)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self.isEnabled():
+            self._down = True
+            self.sliderPressed.emit()
+            self._jump(ev)
+            ev.accept()
+        else:
+            super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._down:
+            self._jump(ev)
+            ev.accept()
+        else:
+            super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._down:
+            self._down = False
+            self.sliderReleased.emit()
+            ev.accept()
+        else:
+            super().mouseReleaseEvent(ev)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        if not self.markers or self.maximum() <= self.minimum():
+            return
+        p = QPainter(self)
+        m, span = 8, max(1, self.width() - 16)
+        dur = (self.maximum() - self.minimum()) / self.res
+        h = self.height()
+        for vt, color, row in self.markers:
+            if not 0 <= vt <= dur:
+                continue
+            x = m + span * vt / dur
+            y0, y1 = (1, h / 2 - 1) if row == 0 else (h / 2 + 1, h - 1)
+            p.setPen(QPen(color, 2))
+            p.drawLine(int(x), int(y0), int(x), int(y1))
+
 
 
 class _FullscreenWindow(QWidget):
@@ -46,6 +111,7 @@ class _FullscreenWindow(QWidget):
 
 class VideoPanel(QWidget):
     openRequested = Signal()
+    overlayRequested = Signal(str, bool)
 
     def __init__(self, bus: TimeBus, playback: Playback, parent=None):
         super().__init__(parent)
@@ -56,6 +122,12 @@ class VideoPanel(QWidget):
         self._fs: _FullscreenWindow | None = None
         self._dragging = False
         self._pending_path: str | None = None
+        # overlay on the video: notes / PX4 messages near the current time
+        self.overlay_notes = False
+        self.overlay_messages = False
+        self.notes_source = lambda: []
+        self.messages_source = lambda: []
+        bus.timeChanged.connect(lambda _t: self.update_overlay())
 
         # --- surface / placeholder ---
         ok, msg = mpv_available()
@@ -65,9 +137,9 @@ class VideoPanel(QWidget):
         self.ph_label = QLabel("No video loaded.\nOpen one (Ctrl+Shift+O) or drop a video file on the window."
                                if ok else msg, alignment=Qt.AlignCenter)
         self.ph_label.setWordWrap(True)
-        self.ph_label.setStyleSheet("color: gray;")
+        theme.style_role(self.ph_label, "dim", "color: gray;")
         self.ph_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        open_btn = QPushButton("Open video…")
+        open_btn = icons.decorate(QPushButton("Open video…"), "film", "primary")
         open_btn.setEnabled(ok)
         open_btn.clicked.connect(self.openRequested.emit)
         ph.addStretch(1)
@@ -83,32 +155,46 @@ class VideoPanel(QWidget):
         self.stack.addWidget(self.surface_host)
 
         # --- video transport ---
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = MarkerSlider()
         self.slider.setEnabled(False)
         self.slider.sliderPressed.connect(lambda: setattr(self, "_dragging", True))
         self.slider.sliderReleased.connect(self._slider_released)
         self.slider.sliderMoved.connect(lambda v: self.pb.seek_video(v / SLIDER_RES))
         self.vtime = QLabel("–")
-        self.vtime.setStyleSheet("font-family: monospace;")
+        self.vtime.setStyleSheet("font-family: monospace; background: transparent;")
         row1 = QHBoxLayout()
         row1.addWidget(self.slider, 1)
         row1.addWidget(self.vtime)
+        self.ov_notes_btn = QToolButton(text="Notes", checkable=True,
+                                        toolTip="Show notes over the video (top right)")
+        self.ov_msgs_btn = QToolButton(text="Messages", checkable=True,
+                                       toolTip="Show log messages over the video (top right)")
+        self.ov_notes_btn.toggled.connect(lambda on: self.overlayRequested.emit("notes", on))
+        self.ov_msgs_btn.toggled.connect(lambda on: self.overlayRequested.emit("messages", on))
+        row1b = QHBoxLayout()
+        row1b.addWidget(QLabel("Over video"))
+        row1b.addWidget(self.ov_notes_btn)
+        row1b.addWidget(self.ov_msgs_btn)
+        row1b.addStretch(1)
 
-        def tb(text, tip, slot, checkable=False):
+        def tb(text, tip, slot, checkable=False, icon=None, variant="neutral"):
             b = QToolButton(text=text, toolTip=tip, checkable=checkable)
             b.setFocusPolicy(Qt.NoFocus)
             (b.toggled if checkable else b.clicked).connect(slot)
+            if icon:
+                icons.decorate(b, icon, variant)
             return b
 
-        self.back_btn = tb("◀|", "Previous frame (←)", lambda: self.pb.step_frames(-1))
-        self.play_btn = tb("▶", "Play / pause (Space)", self.pb.toggle)
-        self.fwd_btn = tb("|▶", "Next frame (→)", lambda: self.pb.step_frames(1))
+        self.back_btn = tb("◀|", "Previous frame (←)", lambda: self.pb.step_frames(-1), icon="step_back")
+        self.play_btn = tb("▶", "Play / pause (Space)", self.pb.toggle, icon="play", variant="primary")
+        self.fwd_btn = tb("|▶", "Next frame (→)", lambda: self.pb.step_frames(1), icon="step_forward")
         self.link_btn = tb("Linked", "Video and log move together. Uncheck to line them up, "
-                           "then press 'Sync here'.", self.pb.set_linked, checkable=True)
+                           "then press 'Sync here'.", self.pb.set_linked, checkable=True, icon="link")
+        self.link_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.link_btn.setChecked(True)
-        self.mute_btn = tb("🔊", "Mute", self._on_mute, checkable=True)
+        self.mute_btn = tb("🔊", "Mute", self._on_mute, checkable=True, icon="volume")
         self.fs_btn = tb("⛶", "Fullscreen on this panel's screen (double-click video, Esc to leave)",
-                         self.toggle_fullscreen)
+                         self.toggle_fullscreen, icon="fullscreen")
         row2 = QHBoxLayout()
         for w in (self.back_btn, self.play_btn, self.fwd_btn, self.link_btn):
             row2.addWidget(w)
@@ -128,8 +214,10 @@ class VideoPanel(QWidget):
         self.event_box = QComboBox(toolTip="Move the log cursor to a log event")
         self.event_box.setFocusPolicy(Qt.NoFocus)
         self.event_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.event_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.event_box.setMinimumContentsLength(6)   # shrink before pushing the right-hand buttons out
         self.event_box.activated.connect(self._on_event_chosen)
-        self.sync_btn = QPushButton("Sync here")
+        self.sync_btn = icons.decorate(QPushButton("Sync here"), "sync", "primary")
         self.sync_btn.setToolTip("The current video frame is the log cursor instant")
         self.sync_btn.clicked.connect(self.pb.sync_here)
         row3 = QHBoxLayout()
@@ -137,31 +225,39 @@ class VideoPanel(QWidget):
         row3.addWidget(self.offset_spin)
         row3.addWidget(self.minus_f)
         row3.addWidget(self.plus_f)
-        row3.addWidget(self.event_box, 1)
-        row3.addWidget(self.sync_btn)
+        row3.addStretch(1)
+        row3b = QHBoxLayout()   # right-hand buttons stay anchored right when the dock is narrow
+        row3b.addWidget(self.event_box, 1)
+        row3b.addWidget(self.sync_btn)
 
         # second sync point: corrects camera / flight-controller clock drift
-        self.point2_btn = QPushButton("Add 2nd point")
+        self.point2_btn = icons.decorate(QPushButton("Add 2nd point"), "target")
         self.point2_btn.setToolTip("Late in the flight: unlink, line up another moment, then press "
                                    "this to correct clock drift between camera and log")
         self.point2_btn.clicked.connect(self._second_point)
         self.sync_label = QLabel()
-        self.sync_label.setStyleSheet("color: gray;")
+        theme.style_role(self.sync_label, "dim", "color: gray;")
+        self.sync_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.sync_label.setMinimumWidth(0)
         self.drift_reset_btn = QToolButton(text="Reset drift",
                                            toolTip="Back to a single sync point (no drift correction)")
         self.drift_reset_btn.clicked.connect(self.pb.reset_drift)
+        icons.decorate(self.drift_reset_btn, "undo")
+        self.drift_reset_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         row4 = QHBoxLayout()
         row4.addWidget(self.sync_label, 1)
-        row4.addWidget(self.drift_reset_btn)
-        row4.addWidget(self.point2_btn)
+        row4b = QHBoxLayout()
+        row4b.addStretch(1)
+        row4b.addWidget(self.drift_reset_btn)
+        row4b.addWidget(self.point2_btn)
 
         self.banner = QLabel("Unlinked: put the video and the log cursor on the same moment, "
                              "then press Sync here (or Add 2nd point, late in the flight, "
                              "to correct clock drift).")
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background: #ffe7b0; color: #503000; padding: 3px;")
+        theme.style_role(self.banner, "banner", "background: #ffe7b0; color: #503000; padding: 3px;")
         self.info = QLabel()
-        self.info.setStyleSheet("color: gray; font-size: 11px;")
+        theme.style_role(self.info, "info", "color: gray; font-size: 11px;")
         self.info.setWordWrap(True)
 
         lay = QVBoxLayout(self)
@@ -169,9 +265,12 @@ class VideoPanel(QWidget):
         lay.setSpacing(3)
         lay.addLayout(self.stack, 1)
         lay.addLayout(row1)
+        lay.addLayout(row1b)
         lay.addLayout(row2)
         lay.addLayout(row3)
+        lay.addLayout(row3b)
         lay.addLayout(row4)
+        lay.addLayout(row4b)
         lay.addWidget(self.banner)
         lay.addWidget(self.info)
 
@@ -179,9 +278,83 @@ class VideoPanel(QWidget):
         self.pb.linkedChanged.connect(self._on_linked)
         self.pb.offsetChanged.connect(self._on_offset)
         self.pb.syncChanged.connect(self._update_sync_label)
+        self.pb.syncChanged.connect(lambda *_: self.update_markers())
+        self.pb.offsetChanged.connect(lambda *_: self.update_markers())
         self.pb.videoTimeChanged.connect(self._on_video_time)
         self._on_linked(True)
         self._update_enabled()
+
+    # --- overlay ---
+    NOTE_HOLD = 4.0     # an instant note stays on screen this long after its time
+    NOTE_LEAD = 1.5     # ... and appears this much before it
+    MSG_HOLD = 6.0
+    MSG_LEAD = 1.0
+    FLASH_IN, FLASH_OUT = 0.4, 0.7   # background flash: fades in before / out after the timestamp
+
+    show_markers = True
+
+    def set_overlay(self, notes: bool | None = None, messages: bool | None = None):
+        if notes is not None:
+            self.overlay_notes = notes
+            self.ov_notes_btn.blockSignals(True)
+            self.ov_notes_btn.setChecked(notes)
+            self.ov_notes_btn.blockSignals(False)
+        if messages is not None:
+            self.overlay_messages = messages
+            self.ov_msgs_btn.blockSignals(True)
+            self.ov_msgs_btn.setChecked(messages)
+            self.ov_msgs_btn.blockSignals(False)
+        self.update_overlay()
+
+    def update_overlay(self):
+        if self.video is None:
+            return
+        from html import escape
+        t = self.bus.t
+        rows, flash = [], 0.0
+
+        def pulse(dt: float) -> float:   # dt = now - event time
+            if -self.FLASH_IN <= dt <= 0:
+                return 1 + dt / self.FLASH_IN
+            if 0 < dt <= self.FLASH_OUT:
+                return 1 - dt / self.FLASH_OUT
+            return 0.0
+
+        if self.overlay_notes:
+            for n in self.notes_source():
+                if n.general:
+                    continue
+                end = n.t_end if n.t_end is not None else n.t + self.NOTE_HOLD
+                if n.t - self.NOTE_LEAD <= t <= end:
+                    flash = max(flash, pulse(t - n.t))
+                    body = f" – {escape(n.text.strip().splitlines()[0])}" if n.text.strip() else ""
+                    rows.append(f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}')
+        if self.overlay_messages:
+            colors = {"error": "#ff7b72", "warning": "#f0c04c"}
+            for m in self.messages_source():
+                if t - self.MSG_HOLD <= m.t <= t + self.MSG_LEAD:
+                    flash = max(flash, pulse(t - m.t))
+                    c = colors.get(m.level.lower(), "#cccccc")
+                    rows.append(f'<span style="color:{c}">{escape(m.level)}</span> {escape(m.text)}')
+        self.video.set_overlay_html("<br>".join(rows[-6:]), flash=flash)
+
+    # --- markers on the progress bar ---
+    def set_show_markers(self, on: bool):
+        self.show_markers = on
+        self.update_markers()
+
+    def update_markers(self):
+        sl = self.slider
+        sl.markers = []
+        if self.show_markers and self.video is not None and self.video.info.duration > 0:
+            to_v = self.pb.sync.to_video
+            for n in self.notes_source():
+                if not n.general:
+                    sl.markers.append((to_v(n.t), QColor(n.color), 0))
+            for m in self.messages_source():
+                c = QColor("#e0524a" if m.level.lower() == "error" else "#f0c04c")
+                sl.markers.append((to_v(m.t), c, 1))
+        sl.update()
 
     # --- loading ---
     def load(self, path: str) -> bool:
@@ -192,6 +365,7 @@ class VideoPanel(QWidget):
             self.video.fileLoaded.connect(self._on_file_loaded)
             self.video.doubleClicked.connect(self.toggle_fullscreen)
             self.surface_lay.addWidget(self.video)
+            self.update_overlay()
         self.pb.detach_video()
         self._pending_path = path
         self.stack.setCurrentWidget(self.surface_host)
@@ -208,6 +382,7 @@ class VideoPanel(QWidget):
         self.info.setText(f"{Path(info.path).name}: {info.describe()}")
         self.pb.attach_video(v)
         self._update_enabled()
+        self.update_markers()
 
     @property
     def video_path(self) -> str | None:
@@ -264,12 +439,14 @@ class VideoPanel(QWidget):
 
     def _on_playing(self, playing: bool):
         self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.setIcon(icons.icon("pause" if playing else "play", "primary"))
 
     def _on_linked(self, linked: bool):
         self.link_btn.blockSignals(True)
         self.link_btn.setChecked(linked)
         self.link_btn.blockSignals(False)
         self.link_btn.setText("Linked" if linked else "Unlinked")
+        self.link_btn.setIcon(icons.icon("link" if linked else "sync", checkable=True))
         self.banner.setVisible(not linked)
         self._update_enabled()
 
@@ -293,6 +470,7 @@ class VideoPanel(QWidget):
 
     def _on_mute(self, muted: bool):
         self.mute_btn.setText("🔇" if muted else "🔊")
+        self.mute_btn.setIcon(icons.icon("mute" if muted else "volume", checkable=True))
         if self.video is not None:
             self.video.set_muted_by_user(muted)
 

@@ -74,3 +74,94 @@ def filter_messages(messages, mode: str):
     limit = MESSAGE_FILTERS.get(mode, MESSAGE_FILTERS["warnings"])
     return [m for m in messages
             if m.level in MESSAGE_LEVELS and MESSAGE_LEVELS.index(m.level) <= limit]
+
+
+def note_at(notes, x: float, tol: float):
+    """The timed note under time ``x`` (span containing it, or instant within ``tol`` s)."""
+    best, best_d = None, None
+    for n in notes:
+        if n.general:
+            continue
+        if n.t_end is not None and n.t - tol <= x <= n.t_end + tol:
+            d = 0.0 if n.t <= x <= n.t_end else min(abs(x - n.t), abs(x - n.t_end))
+        elif n.t_end is None and abs(x - n.t) <= tol:
+            d = abs(x - n.t)
+        else:
+            continue
+        if best is None or d < best_d:
+            best, best_d = n, d
+    return best
+
+
+def msg_at(messages, x: float, tol: float):
+    best, best_d = None, None
+    for m in messages:
+        d = abs(m.t - x)
+        if d <= tol and (best is None or d < best_d):
+            best, best_d = m, d
+    return best
+
+
+def show_message_preview(m, global_pos) -> None:
+    from html import escape
+    from PySide6.QtWidgets import QToolTip
+    color = {"error": "#ff7b72", "warning": "#f0c04c"}.get(m.level.lower(), "#999999")
+    QToolTip.showText(global_pos, f'<b style="color:{color}">{escape(m.level)}</b> {escape(m.text)}')
+
+
+def show_preview_at(notes, messages, x: float, tol: float, global_pos) -> bool:
+    """One preview only: a note wins over a message. Returns whether something was shown."""
+    n = note_at(notes, x, tol)
+    if n is not None:
+        show_note_preview(n, global_pos)
+        return True
+    m = msg_at(messages, x, tol)
+    if m is not None:
+        show_message_preview(m, global_pos)
+        return True
+    return False
+
+
+def show_note_preview(n, global_pos) -> None:
+    from html import escape
+    from PySide6.QtWidgets import QToolTip
+    body = f"<br>{escape(n.text.strip())}".replace("\n", "<br>") if n.text.strip() else ""
+    QToolTip.showText(global_pos, f'<b style="color:{n.color}">■ {escape(n.title)}</b> '
+                                  f'<i>({escape(n.category)})</i>{body}')
+
+
+def _patch_export_dialog():
+    """pyqtgraph's export dialog opens at its tiny designer size with most controls hidden."""
+    from pyqtgraph.GraphicsScene import exportDialog
+    orig = exportDialog.ExportDialog.show
+    if getattr(orig, "_fl_patched", False):
+        return
+
+    def white_bg(self):
+        exp = self.currentExporter
+        params = exp.parameters() if exp is not None else None
+        if params is not None and "background" in [c.name() for c in params.children()]:
+            from PySide6.QtGui import QColor
+            params["background"] = QColor("white")
+
+    def show(self, item=None):
+        first = not self.shown
+        if not hasattr(self, "_white_btn"):
+            from PySide6.QtWidgets import QPushButton
+            self._white_btn = QPushButton("White background (image / SVG)")
+            self._white_btn.setToolTip("Set the export background to white, e.g. for papers")
+            self._white_btn.clicked.connect(self.white_bg)
+            self.ui.gridLayout.addWidget(self._white_btn, 7, 0, 1, 3)
+        orig(self, item)
+        if first:
+            self.setMinimumSize(640, 480)
+            self.resize(780, 560)
+            frame = self.frameGeometry()
+            frame.moveCenter(self.screen().availableGeometry().center())
+            self.move(frame.topLeft())
+    show._fl_patched = True
+    exportDialog.ExportDialog.white_bg = white_bg
+    exportDialog.ExportDialog.show = show
+
+
+_patch_export_dialog()

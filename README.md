@@ -1,15 +1,60 @@
+<p align="center"><img src="flightlogger/resources/flightlogger.svg" width="128" alt="FlightLogger logo"></p>
+
 # FlightLogger
 
-Desktop viewer for PX4 `.ulg` flight logs: Flight Review's graphs in dockable
-panels with a shared red time cursor, synced flight video (with slow motion and
-frame stepping), timeline notes, a whole-flight timeline, track view, messages
-and parameters. Sessions are saved as project files; window arrangements can be
-saved as reusable layouts.
+Desktop viewer for PX4 `.ulg` flight logs. It reproduces
+[Flight Review](https://github.com/PX4/flight_review)'s graphs offline and adds
+what a review session with a ground-camera video needs: synced video, notes,
+undo, graph editing and a layout you can spread over several screens.
 
 ![FlightLogger: flight video synced to Flight Review graphs, track, timeline and notes](docs/screenshot.png)
 
-*A PX4 log with its ground-camera video synced (video left, Flight Review graphs
-center, track and notes right, whole-flight timeline bottom).*
+*A PX4 log with its ground-camera video synced: video with notes and PX4
+warnings drawn over it (left), Flight Review graphs with a note span and the
+selected plot framed (center), track and notes (right), whole-flight timeline
+(bottom). The lavender dark theme follows the look of OmniQuadGUI; a light theme
+is one click away.*
+
+## What it adds to Flight Review
+
+**Flight Review parity**
+* The same graphs (topics, derived values, titles, legends, colors, per-log
+  conditions), generated locally from the `.ulg`, so no upload is needed and it
+  works offline. Open a Flight Review link and the original log is fetched for you.
+
+**Synced flight video**
+* Plays any phone/camera format (MP4, MOV, HEVC, H.264, VP9, AV1, ...), with
+  slow motion down to 0.05x, frame stepping and fullscreen on any screen.
+* One red cursor drives graphs, timeline, track and video together. Sync by hand
+  with one moment, or add a second point to correct camera/flight-controller clock drift.
+* The video progress bar is clickable and shows small ticks for your notes and the
+  PX4 warnings; notes and log messages can also be drawn over the picture, with a
+  soft flash at the exact timestamp.
+
+**Notes on the timeline**
+* Timed notes and spans (with categories and custom colors) plus general untimed
+  notes, shown on every graph and the timeline. Hover a marker for a preview.
+* Export all notes with their timestamps as a text file.
+
+**Dock and layout freedom**
+* Graph panels, track, messages, parameters and lists can be split, tabbed or torn
+  off onto other screens. Save named layouts and whole sessions as project files.
+* One-click graph presets (positions, angles, angular rates, actuators, raw
+  sensors, power) for new panels, and isolate any plot in its own floating window.
+* *Link X* off lets you zoom a single plot on its own; switching it back on
+  realigns everything.
+
+**Editing and export**
+* Edit a plot's title and each series' color, thickness, line style and visibility,
+  and keep the changes in the project.
+* Export a plot as a light-mode PNG for papers; the export dialog has a one-click
+  white background.
+* Light and dark themes, switched with one button.
+
+**Comfort**
+* Undo / redo (Ctrl+Z / Ctrl+Shift+Z) for notes and plot changes, Canc deletes the
+  selected note or plot, a toolbar with the common commands, and the plot you last
+  clicked is framed.
 
 The graph set is ported from [PX4 Flight Review](https://github.com/PX4/flight_review)
 (BSD-3-Clause, see `flightlogger/log/FLIGHT_REVIEW_LICENSE.md`): same topics,
@@ -44,7 +89,8 @@ applications menu. Requires Python 3.10+ (22.04 ships 3.10, 24.04 ships 3.12).
   opened; projects remember the link and download it again if the file is gone.
 
 Warnings and errors that PX4 logged appear as dotted markers on the graphs and
-the timeline (hover for the text). **View → Log messages on graphs** switches
+the timeline (hover for the text; the timeline right-click menu toggles warnings,
+notes, flight events and flight modes). **View → Log messages on graphs** switches
 between off, errors, warnings and errors (default), and all messages.
 
 ## Video sync
@@ -76,10 +122,15 @@ grouped, on any screen.
 
 ## Notes
 
-Press **N** (or **+ Note** in the Notes panel) to add a note at the red cursor.
-Give it a title, a category (Info, Maneuver, Anomaly, Crash, Question) and a
-comment; **Set end** turns it into a span. Notes show as colored markers on
-every graph and on the timeline; click one in the list to jump there.
+Press **N** (or **Note** in the Notes panel) to add a note at the red cursor.
+Give it a title, a category (Info, Maneuver, Anomaly, Crash, Question) or a custom
+color, and a comment. **Set end** (or **Ctrl+N** with the note selected) turns it
+into a span. **General** adds an untimed note about the whole flight. Notes show
+as colored markers on every graph and the timeline (hover for a preview; switch
+it off in **View → Note previews on hover**); click one in the list to jump there.
+**Export** (or File → Export notes as text) writes all notes with their timestamps
+to a text file. In the **Video** panel, the *Notes* / *Messages* buttons under the
+progress bar draw them over the picture.
 
 ## Projects and layouts
 
@@ -105,32 +156,21 @@ stored in `~/.config/flightlogger/layouts`.
 | ← / → | One video frame (0.1 s without video); Shift: 1 s, Ctrl: 10 s |
 | `[` / `]` | Slower / faster (0.05× … 4×) |
 | Home / End | Start / end of log |
-| N | Add a note at the cursor |
+| N / Ctrl+N | Add a note at the cursor / set the selected note's end at the cursor |
+| Canc | Delete the selected note, or the plot you last clicked |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo (notes and plot changes) |
 | Ctrl+O | Open log |
 | Ctrl+L | Open Flight Review link |
 | Ctrl+Shift+O | Open video |
 | Esc | Leave fullscreen video |
 | Ctrl+S / Ctrl+Shift+S | Save project / save as |
 | Ctrl+Shift+P | Open project |
-| Ctrl+G | New graph panel (side by side with the active one) |
+| Ctrl+G | New empty graph panel (presets are in the **New panel** menu) |
 
 Click or drag on any graph or the timeline to move the cursor. The **Graphs**
 list ticks the Flight Review graphs shown in the active panel; drag graphs onto
 any panel to place them. Drag raw signals from **Signals** onto a plot (adds to
-it) or onto empty space (new plot). Click a row in **Messages** to jump there.
+it) or onto empty space (new plot). Click a row in **Messages** to jump there. Right-click a plot to edit it
+(colors, lines), export it as a light image, isolate it in its own window or remove it.
 Panels can be split, tabbed, or torn off into floating windows on other screens.
 
-## Tests
-
-```bash
-.venv/bin/python -m pytest
-```
-
-Tests use a synthetic log generated on the fly (`tests/synth_ulg.py`). Real
-flight data (logs, videos) is kept outside the repo in
-`~/Desktop/FlightLogger Test Data` (override with `FLIGHTLOGGER_TEST_DATA`);
-tests that need it are skipped when the folder is missing.
-
-When a display is available, one test opens the app on screen for about 20 s
-to check video rendering while docking (OpenGL cannot render headless). Set
-`FLIGHTLOGGER_NO_DISPLAY_TESTS=1` to skip it.

@@ -54,7 +54,7 @@ Name=FlightLogger
 Comment=PX4 flight log viewer with Flight Review graphs and video sync
 Exec="$HERE/flightlogger.sh" %f
 Path=$HERE
-Icon=applications-science
+Icon=$HERE/flightlogger/resources/flightlogger.svg
 Terminal=false
 Categories=Science;Engineering;
 EOF

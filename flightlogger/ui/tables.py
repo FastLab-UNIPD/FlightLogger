@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeade
 from ..log.ulog_loader import FlightLog
 from ..plots.common import fmt_time
 from ..timebus import TimeBus
+from . import theme
 
 LEVEL_COLORS = {"WARNING": QColor(255, 236, 200), "ERROR": QColor(255, 210, 210),
                 "CRITICAL": QColor(255, 190, 190), "ALERT": QColor(255, 190, 190),
@@ -49,6 +50,7 @@ class MessagesTable(QWidget):
                      QTableWidgetItem(m.text)]
             cells[0].setData(Qt.UserRole, m.t)
             bg = LEVEL_COLORS.get(m.level)
+            bg = theme.row_tint(bg) if bg is not None else None
             for c, it in enumerate(cells):
                 if bg is not None:
                     it.setBackground(QBrush(bg))
