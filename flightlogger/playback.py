@@ -23,6 +23,7 @@ from .sync import Sync
 from .timebus import TimeBus
 
 SPEED_PRESETS = [0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0]
+CURSOR_HZ = 30
 
 
 class Playback(QObject):
@@ -42,6 +43,13 @@ class Playback(QObject):
         self._linked = True
         self._master = "clock"          # "clock" | "video"
         self._stepping = False          # a frame step is in flight
+        # While the video plays, the cursor follows at most CURSOR_HZ: redrawing
+        # many graphs for every 60 fps frame would starve the video itself.
+        self._pending_pos: float | None = None
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.setSingleShot(True)
+        self._cursor_timer.setInterval(int(1000 / CURSOR_HZ))
+        self._cursor_timer.timeout.connect(self._apply_pending_pos)
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
@@ -158,13 +166,12 @@ class Playback(QObject):
     def play(self):
         if self._playing:
             return
-        if not self._linked:
+        if not self._linked or self.bus.duration <= 0:
+            # unlinked (syncing), or a video opened before any log: video only
             if self.has_video:
                 self._playing = True
                 self.video.play()
                 self.playingChanged.emit(True)
-            return
-        if self.bus.duration <= 0:
             return
         if self.bus.t >= self.bus.duration:
             self.bus.seek(0.0)
@@ -257,8 +264,18 @@ class Playback(QObject):
         self.videoTimeChanged.emit(pos)
         if not self._linked:
             return
-        if (self._playing and self._master == "video") or self._stepping:
+        if self._stepping:
             self._stepping = False
+            self.bus.set_time(self.sync.to_log(pos))
+        elif self._playing and self._master == "video":
+            self._pending_pos = pos
+            if not self._cursor_timer.isActive():
+                self._apply_pending_pos()
+                self._cursor_timer.start()
+
+    def _apply_pending_pos(self):
+        pos, self._pending_pos = self._pending_pos, None
+        if pos is not None and self._linked and self._master == "video":
             self.bus.set_time(self.sync.to_log(pos))
 
     def _on_seek(self, t: float):

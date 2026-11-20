@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
                                QFileDialog, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -121,7 +121,10 @@ class MainWindow(QMainWindow):
         self.track_dw = self.docks.make(self.track, "Track", "track")
         self.messages_dw = self.docks.make(self.messages, "Messages", "messages")
         self.params_dw = self.docks.make(self.params, "Parameters", "parameters")
-        self.video_dw = self.docks.make(self.video_panel, "Video", "video")
+        # The video stays in the main window (move, resize, tab freely); tearing
+        # it off into its own window is not supported yet. Use fullscreen (⛶)
+        # to show it on another screen.
+        self.video_dw = self.docks.make(self.video_panel, "Video", "video", floatable=False)
         center = self.docks.add(panel_dw, dh.CENTER)
         left = self.docks.add(self.video_dw, dh.LEFT)
         lists = self.docks.add(self.graphs_dw, dh.BOTTOM, left)
@@ -135,6 +138,10 @@ class MainWindow(QMainWindow):
         self.docks.mgr.setSplitterSizes(center, [520, 700, 340])
         self.docks.mgr.setSplitterSizes(left, [440, 380])
         self.docks.mgr.setSplitterSizes(right, [380, 420])
+        # bring torn-off windows to the front (some window managers keep a
+        # window opened without direct user input behind the active one)
+        self.docks.mgr.floatingWidgetCreated.connect(
+            lambda fw: QTimer.singleShot(0, lambda: (fw.raise_(), fw.activateWindow())))
         self._fixed_docks = [self.video_dw, self.graphs_dw, self.browser_dw, self.timeline_dw, self.track_dw,
                              self.messages_dw, self.params_dw]
 

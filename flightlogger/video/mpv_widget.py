@@ -1,8 +1,13 @@
 """Video surface backed by libmpv, drawn through mpv's OpenGL render API.
 
-The render API (not window-id embedding) is used so the video keeps working
-when its dock is torn off into a floating window on another screen, after
-reparenting into a fullscreen window, and on Wayland.
+The video dock stays inside the main window (it is not floatable): docking
+moves, resizing and tabbing keep the widget in the same top-level window, so
+its OpenGL context, and mpv's video output with it, stays alive.
+
+Moving the widget to another top-level window (the fullscreen window) makes Qt
+recreate the GL context. Freeing mpv's render context then makes mpv disable
+the video track while the audio keeps playing; the track is re-selected once
+the new context exists, and the picture returns after a short decoder restart.
 
 libmpv >= 0.33 is required (python-mpv's minimum): Ubuntu 22.04 ships 0.34
 (package libmpv1), Ubuntu 24.04 ships 0.37 (package libmpv2).
@@ -68,6 +73,7 @@ class MpvWidget(QOpenGLWidget):
     pausedChanged = Signal(bool)
     eofChanged = Signal(bool)
     fileLoaded = Signal()
+    doubleClicked = Signal()
     _frameReady = Signal()
 
     def __init__(self, parent=None):
@@ -83,7 +89,10 @@ class MpvWidget(QOpenGLWidget):
         self.info = VideoInfo()
         self._render = None
         self._get_proc = None
+        self._restore_vid = None
+        self._pending_load: str | None = None
         self._eof = False
+        self.frames_presented = 0  # frames drawn (diagnostics / tests)
         self._frameReady.connect(self.update, Qt.QueuedConnection)
         self.player.observe_property("time-pos", self._obs_time)
         self.player.observe_property("pause", lambda _n, v: self.pausedChanged.emit(bool(v)))
@@ -117,8 +126,17 @@ class MpvWidget(QOpenGLWidget):
         self._render = mpv.MpvRenderContext(self.player, "opengl",
                                             opengl_init_params={"get_proc_address": self._get_proc})
         self._render.update_cb = self._frameReady.emit
-        # the GL context is recreated when the widget moves to another window
+        # Qt recreates the GL context when the widget moves to another
+        # top-level window (fullscreen and back)
         self.context().aboutToBeDestroyed.connect(self._free_render)
+        if self._restore_vid is not None:
+            # freeing the old render context made mpv disable the video track
+            # (audio kept playing): re-select it so the video output restarts
+            vid, self._restore_vid = self._restore_vid, None
+            self.player.vid = vid
+        if self._pending_load is not None:
+            path, self._pending_load = self._pending_load, None
+            self.player.loadfile(path)
 
     def paintGL(self):
         if self._render is None:
@@ -127,20 +145,35 @@ class MpvWidget(QOpenGLWidget):
         self._render.render(flip_y=True, opengl_fbo={
             "w": int(self.width() * r), "h": int(self.height() * r),
             "fbo": self.defaultFramebufferObject()})
+        self.frames_presented += 1
 
     def _free_render(self):
-        if self._render is not None:
-            self.makeCurrent()
-            self._render.free()
-            self._render = None
-            self.doneCurrent()
+        if self._render is None:
+            return
+        try:
+            vid = self.player.vid
+        except Exception:
+            vid = None
+        self._restore_vid = vid if vid not in (None, False, "no") else "auto"
+        self.makeCurrent()
+        self._render.free()
+        self._render = None
+        self.doneCurrent()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.doubleClicked.emit()
 
     # --- control API (GUI thread) ---
     def load(self, path: str):
         self._eof = False
         self.info = VideoInfo(path=path)
         self.player.pause = True
-        self.player.loadfile(path)
+        if self._render is None:
+            # mpv opens its video output only once a render context exists
+            # (first paint); loading earlier can silently fail
+            self._pending_load = path
+        else:
+            self.player.loadfile(path)
 
     def refresh_info(self) -> VideoInfo:
         p = self.player

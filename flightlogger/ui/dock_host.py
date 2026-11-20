@@ -30,12 +30,14 @@ class DockHost:
         configure_flags()
         self.mgr = CDockManager(main_window)
 
-    def make(self, widget, title: str, name: str, deletable: bool = False) -> CDockWidget:
+    def make(self, widget, title: str, name: str, deletable: bool = False,
+             floatable: bool = True) -> CDockWidget:
         dw = CDockWidget(self.mgr, title)
         dw.setObjectName(name)
         dw.setWidget(widget)
         F = CDockWidget.DockWidgetFeature
         dw.setFeature(F.DockWidgetDeleteOnClose, deletable)
+        dw.setFeature(F.DockWidgetFloatable, floatable)
         return dw
 
     def add(self, dw: CDockWidget, area, target=None):

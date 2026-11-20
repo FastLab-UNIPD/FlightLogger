@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QSlider, QStackedLayout, QToolButton, QVBoxLayout,
                                QWidget)
@@ -171,7 +172,7 @@ class VideoPanel(QWidget):
         if self.video is None:
             self.video = MpvWidget()
             self.video.fileLoaded.connect(self._on_file_loaded)
-            self.video.mouseDoubleClickEvent = lambda ev: self.toggle_fullscreen()
+            self.video.doubleClicked.connect(self.toggle_fullscreen)
             self.surface_lay.addWidget(self.video)
         self.pb.detach_video()
         self._pending_path = path
@@ -266,7 +267,8 @@ class VideoPanel(QWidget):
             return
         if self.video is None:
             return
-        screen = self.window().screen()
+        screen = (QGuiApplication.screenAt(self.mapToGlobal(self.rect().center()))
+                  or QGuiApplication.primaryScreen())
         fs = _FullscreenWindow()
         fs.closed.connect(self._fs_closed)
         self.surface_lay.removeWidget(self.video)

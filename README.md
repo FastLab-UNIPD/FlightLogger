@@ -44,6 +44,11 @@ type the offset. While the video plays it drives the cursor; before it starts
 and after it ends, the log keeps playing on its own. ⛶ (or double-click)
 shows the video fullscreen on the screen its panel is on; Esc leaves.
 
+The Video panel can be resized, moved to any side of the main window or tabbed,
+but not torn off into its own window yet; every other panel (graphs, track,
+messages, parameters, lists, timeline) can float in separate windows, alone or
+grouped, on any screen.
+
 ## Keys
 
 | Key | Action |
@@ -73,3 +78,7 @@ Tests use a synthetic log generated on the fly (`tests/synth_ulg.py`). Real
 flight data (logs, videos) is kept outside the repo in
 `~/Desktop/FlightLogger Test Data` (override with `FLIGHTLOGGER_TEST_DATA`);
 tests that need it are skipped when the folder is missing.
+
+When a display is available, one test opens the app on screen for about 20 s
+to check video rendering while docking (OpenGL cannot render headless). Set
+`FLIGHTLOGGER_NO_DISPLAY_TESTS=1` to skip it.
