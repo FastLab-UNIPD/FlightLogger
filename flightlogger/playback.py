@@ -31,6 +31,7 @@ class Playback(QObject):
     speedChanged = Signal(float)
     linkedChanged = Signal(bool)
     offsetChanged = Signal(float)
+    syncChanged = Signal()           # points / drift changed (offset may too)
     videoTimeChanged = Signal(float)
 
     def __init__(self, bus: TimeBus, parent=None):
@@ -118,8 +119,19 @@ class Playback(QObject):
         """Change the offset keeping the video frame; the log cursor moves."""
         if offset == self.sync.offset:
             return
-        self.sync.offset = offset
-        self.offsetChanged.emit(offset)
+        self.sync.shift(offset - self.sync.offset)
+        self.offsetChanged.emit(self.sync.offset)
+        self.syncChanged.emit()
+        self._follow_video_frame()
+
+    def set_sync(self, sync: Sync):
+        """Replace the whole sync (e.g. from a project file)."""
+        self.sync = sync
+        self.offsetChanged.emit(sync.offset)
+        self.syncChanged.emit()
+        self._follow_video_frame()
+
+    def _follow_video_frame(self):
         if self._linked and self.has_video:
             pos = self.video.time_pos
             if pos is not None:
@@ -129,19 +141,43 @@ class Playback(QObject):
         if self.has_video:
             self.set_offset(self.sync.offset + n * self.video.info.frame_time)
 
-    def sync_here(self):
-        """The current video frame and the current log cursor are the same instant."""
+    def _matched_pair(self):
         if not self.has_video:
-            return
+            return None
         pos = self.video.time_pos
-        if pos is None:
-            return
-        self.pause()
-        self.sync.offset = self.sync.offset_for(pos, self.bus.t)
+        return None if pos is None else (self.bus.t, pos)
+
+    def _relink(self):
         self.offsetChanged.emit(self.sync.offset)
+        self.syncChanged.emit()
         if not self._linked:
             self._linked = True
             self.linkedChanged.emit(True)
+
+    def sync_here(self):
+        """The current video frame and the current log cursor are the same instant."""
+        pair = self._matched_pair()
+        if pair is None:
+            return
+        self.pause()
+        self.sync.set_single_point(*pair)
+        self._relink()
+
+    def sync_second_point(self):
+        """A second matched instant (late in the flight) corrects clock drift.
+        Raises ValueError when the pair is unusable."""
+        pair = self._matched_pair()
+        if pair is None:
+            return
+        self.pause()
+        self.sync.set_second_point(*pair)
+        self._relink()
+
+    def reset_drift(self):
+        self.sync.reset_drift()
+        self.offsetChanged.emit(self.sync.offset)
+        self.syncChanged.emit()
+        self._follow_video_frame()
 
     # --- speed ---
     def set_speed(self, s: float):

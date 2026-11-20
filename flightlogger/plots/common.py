@@ -53,3 +53,24 @@ class TimeAxis(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
         dec = 0 if spacing >= 1 else 1 if spacing >= 0.1 else 2 if spacing >= 0.01 else 3
         return [fmt_time(v * scale, dec) for v in values]
+
+
+# PX4 logged-message markers (dotted lines); never pure red (that is the cursor)
+MESSAGE_LEVELS = ["EMERGENCY", "ALERT", "CRITICAL", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"]
+MESSAGE_FILTERS = {"off": -1, "errors": MESSAGE_LEVELS.index("ERROR"),
+                   "warnings": MESSAGE_LEVELS.index("WARNING"), "all": MESSAGE_LEVELS.index("INFO")}
+
+
+def message_color(level: str) -> str:
+    i = MESSAGE_LEVELS.index(level) if level in MESSAGE_LEVELS else len(MESSAGE_LEVELS)
+    if i <= MESSAGE_LEVELS.index("ERROR"):
+        return "#8e24aa"   # purple: errors and worse
+    if i == MESSAGE_LEVELS.index("WARNING"):
+        return "#b8860b"   # dark gold: warnings
+    return "#7f7f7f"       # gray: notice / info
+
+
+def filter_messages(messages, mode: str):
+    limit = MESSAGE_FILTERS.get(mode, MESSAGE_FILTERS["warnings"])
+    return [m for m in messages
+            if m.level in MESSAGE_LEVELS and MESSAGE_LEVELS.index(m.level) <= limit]

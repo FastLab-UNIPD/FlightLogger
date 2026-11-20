@@ -9,14 +9,15 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication
                                QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressDialog, QTextEdit, QToolBar)
 
+from .log.flight_review import DownloadCancelled, LinkError, download_log, parse_link
 from .log.ulog_loader import FlightLog
 from .notes.model import NotesModel
 from .notes.panel import NotesPanel
-from .project import (PROJECT_EXT, LayoutStore, RecentProjects, b64, load_project, save_project,
-                      unb64)
+from .project import (PROJECT_EXT, LayoutStore, RecentProjects, Settings, b64, load_project,
+                      save_project, unb64)
 from .playback import SPEED_PRESETS, Playback
 from .sync import Sync
-from .plots.common import fmt_time
+from .plots.common import MESSAGE_FILTERS, filter_messages, fmt_time
 from .plots.graph_panel import GraphPanel
 from .plots.timeline import TimelineWidget
 from .timebus import TimeBus
@@ -46,6 +47,35 @@ class _LoadThread(QThread):
             self.loaded.emit(log, "")
         except Exception as e:  # noqa: BLE001 - show any parse error to the user
             self.loaded.emit(None, f"{type(e).__name__}: {e}")
+
+
+def _is_link(text: str) -> bool:
+    try:
+        parse_link(text)
+        return "://" in text or text.startswith("www.")
+    except LinkError:
+        return False
+
+
+class _DownloadThread(QThread):
+    progress = Signal(int, int)
+    finished_ok = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, link: str):
+        super().__init__()
+        self.link = link
+        self.cancel = False
+
+    def run(self):
+        try:
+            path = download_log(self.link, progress=lambda d, t: self.progress.emit(d, t),
+                                cancelled=lambda: self.cancel)
+            self.finished_ok.emit(str(path))
+        except DownloadCancelled:
+            self.failed.emit("")
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            self.failed.emit(str(e))
 
 
 class _KeyFilter(QObject):
@@ -111,6 +141,13 @@ class MainWindow(QMainWindow):
         self.layouts = LayoutStore()
         self.recent = RecentProjects()
         self.project_path: Path | None = None
+        self.settings = Settings()
+        self.message_mode = self.settings.get("message_markers", "warnings")
+        if self.message_mode not in MESSAGE_FILTERS:
+            self.message_mode = "warnings"
+        self.log_source_url: str | None = None   # Flight Review link the log came from
+        self._pending_source_url: str | None = None
+        self._download: _DownloadThread | None = None
         self.interactive = True      # False in tests: no dialogs
         self._dirty = False
         self._after_load = None      # callback once the log finished loading
@@ -194,6 +231,7 @@ class MainWindow(QMainWindow):
         panel = GraphPanel(pid, self.bus, title)
         panel.set_log(self.log)
         panel.set_notes(self.notes.notes)
+        panel.set_messages(self._visible_messages())
         panel.activated.connect(self._set_active)
         panel.changed.connect(lambda p=panel: self._on_panel_changed(p))
         dw = self.docks.make(panel, title, pid, deletable=True)
@@ -305,6 +343,8 @@ class MainWindow(QMainWindow):
         m = self.menuBar().addMenu("&File")
         a = QAction("&Open log…", self, shortcut=QKeySequence.Open, triggered=self.open_log_dialog)
         m.addAction(a)
+        m.addAction(QAction("Open Flight Review &link…", self, shortcut="Ctrl+L",
+                            triggered=self.open_flight_review_dialog))
         m.addAction(QAction("Open &video…", self, shortcut="Ctrl+Shift+O",
                             triggered=self.open_video_dialog))
         m.addSeparator()
@@ -324,6 +364,17 @@ class MainWindow(QMainWindow):
         v.addAction(QAction("Add &note at cursor", self, triggered=self.add_note))  # key: N
         self.layout_menu = v.addMenu("&Layouts")
         self.layout_menu.aboutToShow.connect(self._fill_layout_menu)
+        msg_menu = v.addMenu("Log &messages on graphs")
+        group = QActionGroup(msg_menu)
+        self._message_actions = {}
+        for mode, label in (("off", "Off"), ("errors", "Errors"),
+                            ("warnings", "Warnings and errors"), ("all", "All (incl. info)")):
+            a = msg_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(mode == self.message_mode)
+            group.addAction(a)
+            a.triggered.connect(lambda _c=False, mode=mode: self.set_message_mode(mode))
+            self._message_actions[mode] = a
         v.addSeparator()
         for dw in self._fixed_docks:
             v.addAction(dw.toggleViewAction())
@@ -364,7 +415,8 @@ class MainWindow(QMainWindow):
         if path:
             self.open_log(path)
 
-    def open_log(self, path: str):
+    def open_log(self, path: str, source_url: str | None = None):
+        self._pending_source_url = source_url
         self.clock.pause()
         dlg = QProgressDialog(f"Loading {Path(path).name}…", None, 0, 0, self)
         dlg.setWindowModality(Qt.WindowModal)
@@ -379,6 +431,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open log", err)
             return
         self.log = log
+        self.log_source_url, self._pending_source_url = self._pending_source_url, None
         self.bus.reset(log.duration)
         self.browser.set_log(log)
         self.graph_list.set_graphs(log.graphs)
@@ -391,6 +444,7 @@ class MainWindow(QMainWindow):
         for panel, _ in self.panels.values():
             panel.set_log(log)
         self._fill_empty_panels()
+        self._apply_messages()
         self.graph_list.sync(self.active_panel)
         self.bus.set_x_range(0.0, log.duration, None)
         self.status.setText(log.describe())
@@ -408,20 +462,26 @@ class MainWindow(QMainWindow):
     # --- drag & drop a .ulg and/or a video onto the window ---
     @staticmethod
     def _dropped(ev):
-        files = [u.toLocalFile() for u in ev.mimeData().urls() if u.isLocalFile()]
+        md = ev.mimeData()
+        files = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
         logs = [f for f in files if f.lower().endswith(".ulg")]
         videos = [f for f in files if f.lower().endswith(VIDEO_EXTENSIONS)]
-        return logs, videos
+        links = [u.toString() for u in md.urls() if u.scheme() in ("http", "https")]
+        if not links and md.hasText() and md.text().strip().startswith("http"):
+            links = [md.text().strip()]
+        links = [l for l in links if _is_link(l)]
+        return logs, videos, links
 
     def dragEnterEvent(self, ev):
-        logs, videos = self._dropped(ev)
-        if logs or videos:
+        if any(self._dropped(ev)):
             ev.acceptProposedAction()
 
     def dropEvent(self, ev):
-        logs, videos = self._dropped(ev)
+        logs, videos, links = self._dropped(ev)
         if logs:
             self.open_log(logs[0])
+        elif links:  # a Flight Review link dragged from the browser
+            self.open_flight_review(links[0])
         if videos:
             self.open_video(videos[0])
 
@@ -561,7 +621,12 @@ class MainWindow(QMainWindow):
     # --- projects ---
     def project_data(self) -> dict:
         video = self.video_panel.video_path or self.video_panel._pending_path
-        return {"log": {"path": str(self.log.path)} if self.log else None,
+        log = None
+        if self.log:
+            log = {"path": str(self.log.path)}
+            if self.log_source_url:
+                log["source_url"] = self.log_source_url
+        return {"log": log,
                 "video": {"path": video} if video else None,
                 "sync": self.clock.sync.to_dict(),
                 "cursor": self.bus.t,
@@ -645,11 +710,13 @@ class MainWindow(QMainWindow):
         self.project_path = Path(path)
         self.notes.load_list(data.get("notes", []))
         self.apply_layout(data.get("layout", {}))
-        sync = Sync.from_dict(data.get("sync") or {})
-        self.clock.sync.scale = sync.scale
-        self.clock.set_offset(sync.offset)
-        log_path = self._locate((data.get("log") or {}).get("path"), "log",
-                                "PX4 ULog (*.ulg);;All files (*)")
+        self.clock.set_sync(Sync.from_dict(data.get("sync") or {}))
+        log_entry = data.get("log") or {}
+        source_url = log_entry.get("source_url")
+        if log_entry.get("path") and not Path(log_entry["path"]).exists() and source_url:
+            log_path = None  # downloaded from Flight Review: fetch it again
+        else:
+            log_path = self._locate(log_entry.get("path"), "log", "PX4 ULog (*.ulg);;All files (*)")
         video_path = self._locate((data.get("video") or {}).get("path"), "video",
                                   "Videos (*);;All files (*)")
 
@@ -666,7 +733,83 @@ class MainWindow(QMainWindow):
 
         if log_path:
             self._after_load = finish
-            self.open_log(log_path)
+            self.open_log(log_path, source_url=source_url)
+        elif source_url:
+            self._after_load = finish
+            self.open_flight_review(source_url)
         else:
             finish()
         return True
+
+    # --- Flight Review links ---
+    def open_flight_review_dialog(self):
+        clip = QGuiApplication.clipboard().text().strip()
+        default = clip if clip and _is_link(clip) else ""
+        link, ok = QInputDialog.getText(
+            self, "Open Flight Review link",
+            "Flight Review link (e.g. https://logs.px4.io/plot_app?log=…) or log id:", text=default)
+        if ok and link.strip():
+            self.open_flight_review(link.strip())
+
+    def open_flight_review(self, link: str):
+        """Download the log behind a Flight Review link (cached) and open it."""
+        try:
+            parse_link(link)
+        except LinkError as e:
+            if self.interactive:
+                QMessageBox.warning(self, "Flight Review link", str(e))
+            return
+        if self._download is not None:
+            return
+        self.clock.pause()
+        dlg = QProgressDialog("Downloading log from Flight Review…", "Cancel", 0, 0, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(400)
+        th = _DownloadThread(link)
+        self._download = th
+
+        def progress(done, total):
+            if total:
+                dlg.setMaximum(total // 1024)
+                dlg.setValue(done // 1024)
+            dlg.setLabelText(f"Downloading log from Flight Review… {done / 1e6:.1f} MB"
+                             + (f" of {total / 1e6:.1f} MB" if total else ""))
+
+        def ok(path):
+            self._download = None
+            dlg.close()
+            self.open_log(path, source_url=link)
+
+        def failed(err):
+            self._download = None
+            dlg.close()
+            self._after_load = None
+            if err and self.interactive:
+                QMessageBox.warning(self, "Flight Review link", f"Could not download the log:\n{err}")
+            self.statusBar().showMessage(f"Download failed: {err}" if err else "Download cancelled",
+                                         6000)
+
+        th.progress.connect(progress)
+        th.finished_ok.connect(ok)
+        th.failed.connect(failed)
+        dlg.canceled.connect(lambda: setattr(th, "cancel", True))
+        th.start()
+
+    # --- PX4 message markers ---
+    def _visible_messages(self):
+        return filter_messages(self.log.messages(), self.message_mode) if self.log else []
+
+    def _apply_messages(self):
+        msgs = self._visible_messages()
+        for panel, _ in self.panels.values():
+            panel.set_messages(msgs)
+        self.timeline.set_messages(msgs)
+
+    def set_message_mode(self, mode: str):
+        if mode not in MESSAGE_FILTERS:
+            return
+        self.message_mode = mode
+        self.settings.set("message_markers", mode)
+        if mode in getattr(self, "_message_actions", {}):
+            self._message_actions[mode].setChecked(True)
+        self._apply_messages()

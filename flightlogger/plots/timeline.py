@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 
 from ..log.ulog_loader import FlightLog
 from ..timebus import TimeBus
-from .common import MODE_ALPHA_TIMELINE, CURSOR_COLOR, TimeAxis, mode_color
+from .common import MODE_ALPHA_TIMELINE, CURSOR_COLOR, TimeAxis, message_color, mode_color
 
 EVENT_COLORS = {"armed": "#b06000", "disarmed": "#b06000", "takeoff": "#007a50", "landed": "#007a50"}
 
@@ -38,6 +38,7 @@ class TimelineWidget(pg.PlotWidget):
         pi.addItem(self.cursor, ignoreBounds=True)
         self._static: list = []
         self._note_items: list = []
+        self._message_items: list = []
         self._updating = False
 
         self.scene().sigMouseClicked.connect(self._on_click)
@@ -85,6 +86,19 @@ class TimelineWidget(pg.PlotWidget):
                                       pen=pg.mkPen(color, width=1, style=Qt.DashLine),
                                       label=ev.label, labelOpts={"position": 0.1, "color": color}))
         self._set_region(0, dur)
+
+    def set_messages(self, messages):
+        pi = self.getPlotItem()
+        for it in self._message_items:
+            pi.removeItem(it)
+        self._message_items = []
+        for m in messages:
+            it = pg.InfiniteLine(m.t, angle=90, movable=False,
+                                 pen=pg.mkPen(message_color(m.level), width=1, style=Qt.DotLine))
+            it.setToolTip(f"[{m.level}] {m.text}")
+            it.setZValue(3)
+            pi.addItem(it, ignoreBounds=True)
+            self._message_items.append(it)
 
     def set_notes(self, notes):
         pi = self.getPlotItem()

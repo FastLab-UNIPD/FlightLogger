@@ -18,7 +18,7 @@ from ..log.fr_graphs import GraphDef
 from ..log.ulog_loader import FlightLog, SignalKey
 from ..timebus import TimeBus
 from .common import (CURSOR_COLOR, MIME_GRAPHS, MIME_SIGNALS, PALETTE, TimeAxis, fmt_time,
-                     mode_color)
+                     message_color, mode_color)
 
 PLOT_HEIGHTS = {"S": 130, "M": 210, "L": 320}
 FOLLOW_LEAD = 0.1  # when paging, put the cursor 10% from the left edge
@@ -74,6 +74,7 @@ class GraphPlot:
         self.curves: dict[str, pg.PlotDataItem] = {}
         self.mode_items: list = []
         self.note_items: list = []
+        self.message_items: list = []
         self._n_legend = 0
         self.stale = True
         if graph is not None:
@@ -199,6 +200,21 @@ class GraphPlot:
             self.item.addItem(it, ignoreBounds=True)
             self.note_items.append(it)
 
+    def set_messages(self, messages):
+        """PX4 logged messages (warnings/errors) as thin dotted lines."""
+        for it in self.message_items:
+            self.item.removeItem(it)
+        self.message_items = []
+        if not self.time_based:
+            return
+        for m in messages:
+            it = pg.InfiniteLine(m.t, angle=90, movable=False,
+                                 pen=pg.mkPen(message_color(m.level), width=1, style=Qt.DotLine))
+            it.setToolTip(f"[{m.level}] {m.text}")
+            it.setZValue(-60)
+            self.item.addItem(it, ignoreBounds=True)
+            self.message_items.append(it)
+
     def set_modes(self, segments):
         for it in self.mode_items:
             self.item.removeItem(it)
@@ -311,6 +327,7 @@ class GraphPanel(QWidget):
         self._syncing = False
         self._range: tuple[float, float] | None = None
         self._notes: list = []
+        self._messages: list = []
         # plot specs waiting for a log (a layout applied before a log is open)
         self._pending: list[dict] | None = None
 
@@ -399,6 +416,11 @@ class GraphPanel(QWidget):
         for p in self._time_plots():
             p.set_notes(self._notes)
 
+    def set_messages(self, messages):
+        self._messages = list(messages)
+        for p in self._time_plots():
+            p.set_messages(self._messages)
+
     def clear(self):
         for p in self.plots:
             self.view.ci.removeItem(p.item)
@@ -416,6 +438,7 @@ class GraphPanel(QWidget):
             if "replay" not in self.log.info:
                 p.set_param_changes(self.log.param_changes())
         p.set_notes(self._notes)
+        p.set_messages(self._messages)
         self.plots.insert(len(self.plots) if index is None else min(index, len(self.plots)), p)
         if relayout:
             self._relayout()

@@ -15,9 +15,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QSlider, QStackedLayout, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox,
+                               QPushButton, QSizePolicy, QSlider, QStackedLayout, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from ..log.ulog_loader import FlightLog
 from ..playback import Playback
@@ -140,8 +140,24 @@ class VideoPanel(QWidget):
         row3.addWidget(self.event_box, 1)
         row3.addWidget(self.sync_btn)
 
+        # second sync point: corrects camera / flight-controller clock drift
+        self.point2_btn = QPushButton("Add 2nd point")
+        self.point2_btn.setToolTip("Late in the flight: unlink, line up another moment, then press "
+                                   "this to correct clock drift between camera and log")
+        self.point2_btn.clicked.connect(self._second_point)
+        self.sync_label = QLabel()
+        self.sync_label.setStyleSheet("color: gray;")
+        self.drift_reset_btn = QToolButton(text="Reset drift",
+                                           toolTip="Back to a single sync point (no drift correction)")
+        self.drift_reset_btn.clicked.connect(self.pb.reset_drift)
+        row4 = QHBoxLayout()
+        row4.addWidget(self.sync_label, 1)
+        row4.addWidget(self.drift_reset_btn)
+        row4.addWidget(self.point2_btn)
+
         self.banner = QLabel("Unlinked: put the video and the log cursor on the same moment, "
-                             "then press Sync here.")
+                             "then press Sync here (or Add 2nd point, late in the flight, "
+                             "to correct clock drift).")
         self.banner.setWordWrap(True)
         self.banner.setStyleSheet("background: #ffe7b0; color: #503000; padding: 3px;")
         self.info = QLabel()
@@ -155,12 +171,14 @@ class VideoPanel(QWidget):
         lay.addLayout(row1)
         lay.addLayout(row2)
         lay.addLayout(row3)
+        lay.addLayout(row4)
         lay.addWidget(self.banner)
         lay.addWidget(self.info)
 
         self.pb.playingChanged.connect(self._on_playing)
         self.pb.linkedChanged.connect(self._on_linked)
         self.pb.offsetChanged.connect(self._on_offset)
+        self.pb.syncChanged.connect(self._update_sync_label)
         self.pb.videoTimeChanged.connect(self._on_video_time)
         self._on_linked(True)
         self._update_enabled()
@@ -221,6 +239,28 @@ class VideoPanel(QWidget):
                   self.offset_spin, self.minus_f, self.plus_f, self.mute_btn, self.fs_btn):
             w.setEnabled(has)
         self.sync_btn.setEnabled(has and not self.pb.linked)
+        self.point2_btn.setEnabled(has and not self.pb.linked and bool(self.pb.sync.points))
+        self.drift_reset_btn.setEnabled(has and self.pb.sync.scale != 1.0)
+        self._update_sync_label()
+
+    def _update_sync_label(self):
+        sync = self.pb.sync
+        n = len(sync.points)
+        if n == 0:
+            text = "Not synced yet"
+        elif n == 1 or sync.scale == 1.0:
+            text = "Synced at 1 point (no drift correction)"
+        else:
+            text = (f"Synced at 2 points · drift {sync.drift_percent:+.3f} % "
+                    f"({1000 * (sync.scale - 1):+.1f} ms per s)")
+        self.sync_label.setText(text)
+        self.drift_reset_btn.setEnabled(self.pb.has_video and sync.scale != 1.0)
+
+    def _second_point(self):
+        try:
+            self.pb.sync_second_point()
+        except ValueError as e:
+            QMessageBox.warning(self, "Second sync point", str(e))
 
     def _on_playing(self, playing: bool):
         self.play_btn.setText("⏸" if playing else "▶")

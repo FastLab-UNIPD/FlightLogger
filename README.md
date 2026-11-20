@@ -34,6 +34,19 @@ applications menu. Requires Python 3.10+ (22.04 ships 3.10, 24.04 ships 3.12).
 ./flightlogger.sh [path/to/log.ulg]
 ```
 
+## Opening logs
+
+* **File → Open log** (Ctrl+O), or drop a `.ulg` on the window.
+* **File → Open Flight Review link** (Ctrl+L): paste a link such as
+  `https://review.px4.io/plot_app?log=<id>` (logs.px4.io and self-hosted Flight
+  Review servers work too), or drag the link from the browser onto the window.
+  The original `.ulg` is downloaded once to `~/.cache/flightlogger/logs` and
+  opened; projects remember the link and download it again if the file is gone.
+
+Warnings and errors that PX4 logged appear as dotted markers on the graphs and
+the timeline (hover for the text). **View → Log messages on graphs** switches
+between off, errors, warnings and errors (default), and all messages.
+
 ## Video sync
 
 Open a video with **File → Open video** (Ctrl+Shift+O) or drop it on the window
@@ -46,7 +59,13 @@ Open a video with **File → Open video** (Ctrl+Shift+O) or drop it on the windo
 4. Press **Sync here**. Video and log are linked again.
 
 Fine-tune with **−1f / +1f** (the video frame stays, the log cursor moves) or
-type the offset. While the video plays it drives the cursor; before it starts
+type the offset.
+
+Camera and flight controller clocks drift slightly apart. For long flights,
+add a **second sync point** late in the flight: unlink, line up another
+recognizable moment, and press **Add 2nd point**. FlightLogger then corrects
+the drift between the two points (shown under the sync controls; **Reset drift**
+goes back to a single point). While the video plays it drives the cursor; before it starts
 and after it ends, the log keeps playing on its own. ⛶ (or double-click)
 shows the video fullscreen on the screen its panel is on; Esc leaves.
 
@@ -88,6 +107,7 @@ stored in `~/.config/flightlogger/layouts`.
 | Home / End | Start / end of log |
 | N | Add a note at the cursor |
 | Ctrl+O | Open log |
+| Ctrl+L | Open Flight Review link |
 | Ctrl+Shift+O | Open video |
 | Esc | Leave fullscreen video |
 | Ctrl+S / Ctrl+Shift+S | Save project / save as |

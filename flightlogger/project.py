@@ -164,3 +164,25 @@ class RecentProjects:
         items = [p] + [x for x in self.list() if x != p]
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(items[: self.MAX], indent=1), encoding="utf-8")
+
+
+class Settings:
+    """Small persistent preferences (JSON in the config folder)."""
+
+    def __init__(self, directory: str | Path | None = None):
+        self.file = Path(directory or config_dir()) / "settings.json"
+
+    def _read(self) -> dict:
+        try:
+            return json.loads(self.file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def get(self, key: str, default=None):
+        return self._read().get(key, default)
+
+    def set(self, key: str, value):
+        d = self._read()
+        d[key] = value
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.write_text(json.dumps(d, indent=1), encoding="utf-8")

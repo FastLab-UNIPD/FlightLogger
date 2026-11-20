@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # never read or write the user's real layouts / recent projects
 import tempfile  # noqa: E402
 os.environ["FLIGHTLOGGER_CONFIG_DIR"] = tempfile.mkdtemp(prefix="flightlogger-test-config-")
+os.environ["FLIGHTLOGGER_CACHE_DIR"] = tempfile.mkdtemp(prefix="flightlogger-test-cache-")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
