@@ -23,6 +23,8 @@ def configure_flags():
     for flag, on in [(F.OpaqueSplitterResize, True), (F.FocusHighlighting, True),
                      (F.XmlCompressionEnabled, False), (F.EqualSplitOnInsertion, True),
                      (F.FloatingContainerHasWidgetTitle, True),
+                     # real window frame: minimize / maximize / free desktop placement
+                     (F.FloatingContainerForceNativeTitleBar, True),
                      (F.DockAreaHasUndockButton, True), (F.AllTabsHaveCloseButton, True),
                      # tab titles are measured before the theme's bold upper-case
                      # font applies; eliding then cuts them ("MESSAG…")
