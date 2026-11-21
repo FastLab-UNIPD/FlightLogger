@@ -118,7 +118,16 @@ shows the video fullscreen on the screen its panel is on; Esc leaves.
 The Video panel can be resized, moved to any side of the main window or tabbed,
 but not torn off into its own window yet; every other panel (graphs, track,
 messages, parameters, lists, timeline) can float in separate windows, alone or
-grouped, on any screen.
+grouped, on any screen. Floating windows are ordinary desktop windows: they have
+minimize, maximize and close buttons, appear in the taskbar and can be placed
+anywhere, also outside the program. To dock one along a whole side of the main
+window, drag it onto the edge of the window (the edge arrows appear) or use
+**Window → Dock floating window to window edge**.
+
+Closing a graph panel only hides it: the **Window** menu lists every graph panel
+(closed or floating ones are marked) to bring it back, and has **Delete graph
+panel**, **Bring floating windows to front** and **Dock all floating windows**.
+Closing an isolated plot window removes that copy.
 
 ## Notes
 

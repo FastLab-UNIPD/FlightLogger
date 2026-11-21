@@ -149,6 +149,56 @@ class _KeyFilter(QObject):
         return True
 
 
+class _FloatingKeeper(QObject):
+    """Torn-off panels are ordinary top-level windows (own title bar with minimize /
+    maximize / close, taskbar entry, free placement on the desktop). This only makes
+    sure a newly created one is really shown and lies inside a screen: QtAds sometimes
+    leaves a new one hidden or off screen."""
+
+    def __init__(self, win: QMainWindow):
+        super().__init__(win)
+        self.win = win
+
+    FLAGS = (Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint
+             | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+
+    def watch(self, fw):
+        # QtAds sets its flags after this signal, so apply ours a moment later
+        QTimer.singleShot(60, lambda: self._normalize(fw))
+
+    def _normalize(self, fw):
+        """A plain window with minimize / maximize buttons and a taskbar entry (QtAds'
+        own flags make the window manager hide it from the taskbar and the Alt+Tab list)."""
+        try:
+            if not any(not d.isClosed() for d in fw.dockWidgets()):
+                return
+            if fw.windowFlags() != self.FLAGS:
+                visible = fw.isVisible()
+                fw.setWindowFlags(self.FLAGS)
+                if visible:
+                    fw.show()
+            self._check(fw)
+        except RuntimeError:
+            pass
+
+    def _check(self, fw, recheck: bool = True):
+        try:
+            if not any(not d.isClosed() for d in fw.dockWidgets()):
+                return               # closed on purpose: leave it hidden
+            if not fw.isVisible() and not fw.isMinimized():
+                fw.show()
+            avail = [s.availableGeometry() for s in QGuiApplication.screens()]
+            fr = fw.frameGeometry()
+            if not any(fr.intersected(a).width() > 120 and fr.intersected(a).height() > 40
+                       for a in avail):
+                c = self.win.frameGeometry().center()
+                fw.move(c.x() - fr.width() // 2, c.y() - fr.height() // 2)
+            if recheck:
+                QTimer.singleShot(700, lambda: self._check(fw, False))
+        except RuntimeError:  # already deleted
+            pass
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -225,15 +275,18 @@ class MainWindow(QMainWindow):
         self.docks.mgr.setSplitterSizes(center, [680, 600, 320])
         self.docks.mgr.setSplitterSizes(left, [560, 300])
         self.docks.mgr.setSplitterSizes(right, [380, 420])
-        # bring torn-off windows to the front (some window managers keep a
-        # window opened without direct user input behind the active one)
-        self.docks.mgr.floatingWidgetCreated.connect(
-            lambda fw: QTimer.singleShot(0, lambda: (fw.raise_(), fw.activateWindow())))
+        # Torn-off windows stay above the main window (transient for it), so
+        # clicking the main window no longer hides them behind it; they can
+        # still go to any screen. Also bring each new one to the front.
+        self._floating_keeper = _FloatingKeeper(self)
+        self.docks.mgr.floatingWidgetCreated.connect(self._floating_keeper.watch)
         self._fixed_docks = [self.video_dw, self.graphs_dw, self.browser_dw, self.timeline_dw,
                              self.track_dw, self.messages_dw, self.params_dw, self.notes_dw]
 
         self._build_toolbar()
         self._build_menus()
+        from .ui import dock_debug
+        dock_debug.install(self)   # only active with FLIGHTLOGGER_DEBUG_DOCK=<logfile>
         self.status = QLabel("Open a .ulg log (Ctrl+O) or drop one on the window")
         self.statusBar().addWidget(self.status, 1)
         QApplication.instance().installEventFilter(_KeyFilter(self))
@@ -252,7 +305,8 @@ class MainWindow(QMainWindow):
                 pass
 
     # --- panels ---
-    def _create_panel_dock(self, title: str | None = None, pid: str | None = None):
+    def _create_panel_dock(self, title: str | None = None, pid: str | None = None,
+                           deletable: bool = False):
         if pid is None:
             self._panel_seq += 1
             pid = f"graphs_{self._panel_seq}"
@@ -269,7 +323,9 @@ class MainWindow(QMainWindow):
         panel.isolateRequested.connect(self.isolate_plot)
         panel.previews = self.timeline.previews
         panel.changed.connect(lambda p=panel: self._on_panel_changed(p))
-        dw = self.docks.make(panel, title, pid, deletable=True)
+        # Closing a graph panel only hides it (Window menu brings it back);
+        # deleting is explicit. Isolated plot copies are deleted on close.
+        dw = self.docks.make(panel, title, pid, deletable=deletable)
         dw.closed.connect(lambda pid=pid: self._on_panel_closed(pid))
         self.panels[pid] = (panel, dw)
         self.active_panel = panel
@@ -296,7 +352,7 @@ class MainWindow(QMainWindow):
     def isolate_plot(self, plot):
         """Open a copy of a plot in its own landscape floating window (always a fresh window,
         whatever panel is active)."""
-        dw = self._create_panel_dock()
+        dw = self._create_panel_dock(deletable=True)
         panel = self.panels[dw.objectName()][0]
         panel.load_plots([plot.to_dict()])
         panel.set_plot_height("L")
@@ -306,11 +362,17 @@ class MainWindow(QMainWindow):
         self._set_active(panel)
         return panel
 
+    def _docked_open(self, panel) -> bool:
+        dw = self.panels.get(panel.panel_id, (None, None))[1] if panel else None
+        return dw is not None and not dw.isClosed() and not dw.isFloating()
+
     def new_panel(self):
-        """New graph panel, placed side by side with the active one."""
-        target = None
-        if self.active_panel and self.active_panel.panel_id in self.panels:
-            target = self.panels[self.active_panel.panel_id][1].dockAreaWidget()
+        """New graph panel, side by side with the active one when that one sits in
+        the main window; otherwise next to the first docked panel (never inside a
+        floating or closed panel's window, where it could go unnoticed)."""
+        anchor = self.active_panel if self._docked_open(self.active_panel) else next(
+            (p for p, _ in self.panels.values() if self._docked_open(p)), None)
+        target = self.panels[anchor.panel_id][1].dockAreaWidget() if anchor else None
         dw = self._create_panel_dock()
         if target is not None:
             self.docks.add(dw, dh.RIGHT, target)
@@ -330,15 +392,115 @@ class MainWindow(QMainWindow):
             self.graph_list.sync(panel)
 
     def _on_panel_closed(self, pid: str):
-        panel, _ = self.panels.pop(pid, (None, None))
-        self.undo_mgr.forget_panel(pid)
+        panel, dw = self.panels.get(pid, (None, None))
+        if panel is None:
+            return
+        if dw.features() & dw.DockWidgetFeature.DockWidgetDeleteOnClose:
+            self.panels.pop(pid, None)
+            self.undo_mgr.forget_panel(pid)
         if panel is self.active_panel:
-            self.active_panel = next((p for p, _ in self.panels.values()), None)
+            self.active_panel = next((p for p, d in self.panels.values() if not d.isClosed()), None)
             self.graph_list.sync(self.active_panel)
+
+    def delete_panel(self, pid: str, confirm: bool = True) -> bool:
+        """Remove a graph panel for good (closing one only hides it)."""
+        panel, dw = self.panels.get(pid, (None, None))
+        if panel is None:
+            return False
+        if confirm and self.interactive and panel.plots and QMessageBox.question(
+                self, "Delete graph panel",
+                f"Delete \u201c{panel.title}\u201d and its {len(panel.plots)} plot(s)?") != QMessageBox.Yes:
+            return False
+        self.panels.pop(pid)
+        self.undo_mgr.forget_panel(pid)
+        self.docks.mgr.removeDockWidget(dw)
+        dw.deleteLater()
+        if panel is self.active_panel:
+            self.active_panel = next((p for p, d in self.panels.values() if not d.isClosed()), None)
+            self.graph_list.sync(self.active_panel)
+        return True
+
+    def show_panel(self, pid: str):
+        panel, dw = self.panels.get(pid, (None, None))
+        if dw is None:
+            return
+        dw.toggleView(True)
+        dw.setAsCurrentTab()
+        if dw.isFloating() and dw.floatingDockContainer():
+            dw.floatingDockContainer().raise_()
+        self._set_active(panel)
+
+    def raise_floating_windows(self):
+        for fw in self.docks.mgr.floatingWidgets():
+            if fw.isVisible():
+                fw.raise_()
+
+    def dock_at_edge(self, docks, area):
+        """Dock torn-off panels along a whole edge of the window (full height / width),
+        which dropping on an existing panel cannot do."""
+        mgr = self.docks.mgr
+        first = docks[0]
+        mgr.addDockWidget(area, first)
+        for d in docks[1:]:
+            mgr.addDockWidgetTabToArea(d, first.dockAreaWidget())
+        first.toggleView(True)
+
+    def dock_floating_windows(self):
+        """Bring every torn-off panel back into the main window."""
+        anchor = next((p for p, _ in self.panels.values() if self._docked_open(p)), None)
+        area = self.panels[anchor.panel_id][1].dockAreaWidget() if anchor else None
+        for fw in list(self.docks.mgr.floatingWidgets()):
+            for dw in list(fw.dockWidgets()):
+                if dw.objectName() in self.panels:
+                    if area is not None:
+                        self.docks.mgr.addDockWidgetTabToArea(dw, area)
+                    else:
+                        area = self.docks.add(dw, dh.CENTER)
+                else:
+                    self.docks.add(dw, dh.RIGHT)
+
+    def _fill_window_menu(self):
+        m = self.window_menu
+        m.clear()
+        m.addSection("Graph panels")
+        for pid, (panel, dw) in self.panels.items():
+            where = " (closed)" if dw.isClosed() else " (floating)" if dw.isFloating() else ""
+            a = m.addAction(panel.title + where)
+            a.setCheckable(True)
+            a.setChecked(not dw.isClosed())
+            a.triggered.connect(lambda on, pid=pid: self.show_panel(pid) if on
+                                else self.panels[pid][1].toggleView(False))
+        if not self.panels:
+            m.addAction("(none)").setEnabled(False)
+        m.addAction("Show all graph panels",
+                    lambda: [self.show_panel(pid) for pid in list(self.panels)])
+        delete = m.addMenu("Delete graph panel")
+        for pid, (panel, _dw) in self.panels.items():
+            delete.addAction(panel.title, lambda pid=pid: self.delete_panel(pid))
+        delete.setEnabled(bool(self.panels))
+        m.addSeparator()
+        floating = bool(self.docks.mgr.floatingWidgets())
+        a = m.addAction("Bring floating windows to front", self.raise_floating_windows)
+        a.setEnabled(floating)
+        a = m.addAction("Dock all floating windows", self.dock_floating_windows)
+        a.setEnabled(floating)
+        edge = m.addMenu("Dock floating window to window edge")
+        edge.setEnabled(floating)
+        for fw in self.docks.mgr.floatingWidgets():
+            docks = [d for d in fw.dockWidgets() if not d.isClosed()]
+            if not docks:
+                continue
+            sub = edge.addMenu(" + ".join(d.windowTitle() for d in docks))
+            for label, area in (("Left", dh.LEFT), ("Right", dh.RIGHT), ("Top", dh.TOP), ("Bottom", dh.BOTTOM)):
+                sub.addAction(label, lambda docks=docks, area=area: self.dock_at_edge(docks, area))
 
     def _target_panel(self) -> GraphPanel:
         if self.active_panel is None:
             self.active_panel = self.new_panel()
+        else:
+            dw = self.panels.get(self.active_panel.panel_id, (None, None))[1]
+            if dw is not None and dw.isClosed():   # ticking a graph into a closed panel
+                self.show_panel(self.active_panel.panel_id)
         return self.active_panel
 
     def _on_graph_toggled(self, graph_id: str, on: bool):
@@ -555,6 +717,10 @@ class MainWindow(QMainWindow):
         for dw in self._fixed_docks:
             v.addAction(dw.toggleViewAction())
 
+        self.window_menu = self.menuBar().addMenu("&Window")
+        self.window_menu.aboutToShow.connect(self._fill_window_menu)
+        self._fill_window_menu()
+
     # --- stepping ---
     def step(self, dt: float):
         self.clock.step_seconds(dt)
@@ -730,9 +896,8 @@ class MainWindow(QMainWindow):
 
     def apply_layout(self, layout: dict):
         # replace the graph panels
-        for pid, (_panel, dw) in list(self.panels.items()):
-            self.panels.pop(pid)
-            dw.closeDockWidget()  # deleted on close
+        for pid in list(self.panels):
+            self.delete_panel(pid, confirm=False)
         self.active_panel = None
         first_area = None
         for pd in layout.get("panels", []):
