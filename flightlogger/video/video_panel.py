@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QMessageBox,
                                QPushButton, QSizePolicy, QSlider, QStackedLayout, QToolButton,
@@ -94,7 +94,11 @@ class MarkerSlider(QSlider):
 
 
 class _FullscreenWindow(QWidget):
+    """Fullscreen video with an auto-hiding control bar (progress bar, play/pause, time)
+    along the bottom: it shows when the mouse moves and hides after a moment."""
     closed = Signal()
+    HIDE_AFTER_MS = 2500
+    BAR_HEIGHT = 56
 
     def __init__(self):
         super().__init__(None, Qt.Window)
@@ -103,6 +107,70 @@ class _FullscreenWindow(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.lay = lay
+
+        self.bar = QWidget(self)
+        self.bar.setObjectName("fsBar")
+        self.bar.setStyleSheet("#fsBar { background: rgba(0, 0, 0, 170); } "
+                               "QLabel { background: transparent; color: white; font-size: 14px; } "
+                               "QToolButton { background: transparent; color: white; border: none; "
+                               "font-size: 18px; padding: 4px 10px; } "
+                               "QToolButton:hover { background: rgba(255, 255, 255, 40); "
+                               "border-radius: 6px; }")
+        self.slider = MarkerSlider()
+        self.slider.setEnabled(False)
+        self.play_btn = QToolButton(text="▶")
+        self.play_btn.setFocusPolicy(Qt.NoFocus)
+        self.play_btn.setToolTip("Play / pause (Space)")
+        self.time_label = QLabel("–")
+        self.time_label.setStyleSheet("font-family: monospace;")
+        self.exit_btn = QToolButton(text="✕")
+        self.exit_btn.setFocusPolicy(Qt.NoFocus)
+        self.exit_btn.setToolTip("Leave fullscreen (Esc)")
+        row = QHBoxLayout(self.bar)
+        row.setContentsMargins(14, 8, 14, 8)
+        row.addWidget(self.play_btn)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.time_label)
+        row.addWidget(self.exit_btn)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._hide_bar)
+        self.bar.hide()
+
+    def watch(self, widget):
+        """Show the bar whenever the mouse moves over ``widget`` (the video)."""
+        widget.setMouseTracking(True)
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.MouseMove:
+            self.reveal()
+        return False
+
+    def reveal(self):
+        self._place_bar()
+        self.bar.show()
+        self.bar.raise_()
+        self.unsetCursor()
+        self._hide_timer.start(self.HIDE_AFTER_MS)
+
+    def _hide_bar(self):
+        if self.slider._down or self.bar.underMouse():   # keep it while it is being used
+            self._hide_timer.start(self.HIDE_AFTER_MS)
+            return
+        self.bar.hide()
+        self.setCursor(Qt.BlankCursor)
+
+    def _place_bar(self):
+        self.bar.setGeometry(0, self.height() - self.BAR_HEIGHT, self.width(), self.BAR_HEIGHT)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.bar.isVisible():
+            self._place_bar()
+
+    def set_playing(self, playing: bool):
+        self.play_btn.setText("❚❚" if playing else "▶")
 
     def closeEvent(self, ev):
         self.closed.emit()
@@ -454,6 +522,9 @@ class VideoPanel(QWidget):
                 c = QColor("#e0524a" if m.level.lower() == "error" else "#f0c04c")
                 sl.markers.append((to_v(m.t), c, 1))
         sl.update()
+        if self._fs is not None:
+            self._fs.slider.markers = list(sl.markers)
+            self._fs.slider.update()
 
     # --- loading ---
     def load(self, path: str) -> bool:
@@ -562,7 +633,16 @@ class VideoPanel(QWidget):
             self.slider.blockSignals(True)
             self.slider.setValue(int(vt * SLIDER_RES))
             self.slider.blockSignals(False)
-        self.vtime.setText(f"{fmt_time(vt)} / {fmt_time(self.video.info.duration, 1)}")
+        text = f"{fmt_time(vt)} / {fmt_time(self.video.info.duration, 1)}"
+        self.vtime.setText(text)
+        fs = self._fs
+        if fs is not None:
+            fs.time_label.setText(text)
+            if not self._dragging:
+                fs.slider.blockSignals(True)
+                fs.slider.setRange(self.slider.minimum(), self.slider.maximum())
+                fs.slider.setValue(int(vt * SLIDER_RES))
+                fs.slider.blockSignals(False)
 
     def _slider_released(self):
         self._dragging = False
@@ -594,11 +674,35 @@ class VideoPanel(QWidget):
         fs.setGeometry(screen.geometry())
         fs.showFullScreen()
         self._fs = fs
+        self._wire_fs_controls(fs)
+
+    def _wire_fs_controls(self, fs: _FullscreenWindow):
+        """The fullscreen bar drives the same playback as the panel's progress bar."""
+        sl = fs.slider
+        sl.setEnabled(True)
+        sl.setRange(self.slider.minimum(), self.slider.maximum())
+        sl.setValue(self.slider.value())
+        sl.sliderPressed.connect(lambda: setattr(self, "_dragging", True))
+        sl.sliderMoved.connect(lambda v: self.pb.seek_video(v / SLIDER_RES))
+        sl.sliderReleased.connect(lambda: self._fs_slider_released(fs))
+        fs.play_btn.clicked.connect(self.pb.toggle)
+        fs.exit_btn.clicked.connect(self.exit_fullscreen)
+        self.pb.playingChanged.connect(fs.set_playing)
+        fs.set_playing(self.pb.playing)
+        fs.watch(self.video)
+        self.update_markers()
+        self._on_video_time(self.video.time_pos or 0.0)
+        fs.reveal()   # show the bar briefly so the user knows it is there
+
+    def _fs_slider_released(self, fs: _FullscreenWindow):
+        self._dragging = False
+        self.pb.seek_video(fs.slider.value() / SLIDER_RES)
 
     def exit_fullscreen(self):
         fs, self._fs = self._fs, None
         if fs is None:
             return
+        self.video.removeEventFilter(fs)
         fs.lay.removeWidget(self.video)
         self.surface_lay.addWidget(self.video)
         fs.closed.disconnect(self._fs_closed)

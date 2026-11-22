@@ -123,7 +123,9 @@ recognizable moment, and press **Add 2nd point**. FlightLogger then corrects
 the drift between the two points (shown under the sync controls; **Reset drift**
 goes back to a single point). While the video plays it drives the cursor; before it starts
 and after it ends, the log keeps playing on its own. ⛶ (or double-click)
-shows the video fullscreen on the screen its panel is on; Esc leaves.
+shows the video fullscreen on the screen its panel is on; Esc leaves. In fullscreen, move the mouse to
+show a bar with the progress bar (click or drag to seek, with the note and warning ticks), play/pause,
+the time and a close button; it hides again after a moment.
 
 The Video panel can be resized, moved to any side of the main window or tabbed,
 but not torn off into its own window yet; every other panel (graphs, track,
