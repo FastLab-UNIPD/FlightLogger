@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "PX4 ULog viewer with video sync, Flight Review graphs and timeline notes"
 requires-python = ">=3.10"
 dependencies = [
-    "pyside6>=6.5",
-    "pyside6-qtads>=4.3",
+    # PySide6 6.12.0 aborts at exit ("free(): invalid pointer") once ~13 pyqtgraph plots
+    # exist (reproduces with plain pyqtgraph, no FlightLogger code); 6.11.x is clean.
+    # QtAds 5.1.1.1 needs exactly 6.12.0, so it is capped too.
+    "pyside6>=6.11,<6.12",
+    "pyside6-qtads>=5.1.1,<5.1.1.1",
     "pyqtgraph>=0.13.7",
     "pyulog>=1.1",
     "numpy",

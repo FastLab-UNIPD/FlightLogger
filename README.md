@@ -2,7 +2,13 @@
 
 # FlightLogger
 
-> **Note:** all the code in this repository is entirely AI generated. The app is tested and working on **Ubuntu 24.04**. The modifications needed for **Ubuntu 22.04** live in a separate branch, `Development-Ubuntu-22.04`.
+**Version 0.1.0** (first release, see the [update log](#update-log)).
+
+> **Note:** all the code in this repository is entirely AI generated. Version 0.1.0 is
+> developed and tested on **Ubuntu 22.04**. The last state tested on **Ubuntu 24.04** is kept in
+> the branch `Last-tested-Ubuntu-24.04`; the dependency versions are pinned (PySide6 6.11.x,
+> QtAds 5.1.1) to avoid an exit crash with PySide6 6.12.0. Ongoing development happens in the
+> branch `Development-Ubuntu-22.04`; `main` holds the released versions.
 
 Desktop viewer for PX4 `.ulg` flight logs. It reproduces
 [Flight Review](https://github.com/PX4/flight_review)'s graphs offline and adds
@@ -30,8 +36,10 @@ is one click away.*
 * One red cursor drives graphs, timeline, track and video together. Sync by hand
   with one moment, or add a second point to correct camera/flight-controller clock drift.
 * The video progress bar is clickable and shows small ticks for your notes and the
-  PX4 warnings; notes and log messages can also be drawn over the picture, with a
-  soft flash at the exact timestamp.
+  PX4 warnings; notes and log messages can also be drawn over the picture (one
+  semi-transparent box each, with a soft flash at the exact timestamp or for the whole
+  length of a span). The **Timing** and **Size** menus set how long notes show before and
+  after their time and how large the overlay text is.
 
 **Notes on the timeline**
 * Timed notes and spans (with categories and custom colors) plus general untimed
@@ -56,7 +64,7 @@ is one click away.*
 **Comfort**
 * Undo / redo (Ctrl+Z / Ctrl+Shift+Z) for notes and plot changes, Canc deletes the
   selected note or plot, a toolbar with the common commands, and the plot you last
-  clicked is framed.
+  clicked is framed. **Help → About** shows the version.
 
 The graph set is ported from [PX4 Flight Review](https://github.com/PX4/flight_review)
 (BSD-3-Clause, see `flightlogger/log/FLIGHT_REVIEW_LICENSE.md`): same topics,
@@ -141,7 +149,10 @@ as colored markers on every graph and the timeline (hover for a preview; switch
 it off in **View → Note previews on hover**); click one in the list to jump there.
 **Export** (or File → Export notes as text) writes all notes with their timestamps
 to a text file. In the **Video** panel, the *Notes* / *Messages* buttons under the
-progress bar draw them over the picture.
+progress bar draw them over the picture: an instant note appears shortly before its time
+and stays a few seconds after; a span stays for its whole length. **Timing ▾** sets how
+long notes appear before and stay after (default 1.5 s and 4 s) and **Size ▾** sets the
+text size; both are remembered.
 
 ## Projects and layouts
 
@@ -185,3 +196,19 @@ it) or onto empty space (new plot). Click a row in **Messages** to jump there. R
 (colors, lines), export it as a light image, isolate it in its own window or remove it.
 Panels can be split, tabbed, or torn off into floating windows on other screens.
 
+## Update log
+
+Newest first. Versions follow `MAJOR.MINOR.PATCH`: patch = bug fixes, minor = new features that
+keep old projects working, major = breaking changes (0.x = still in development).
+
+### 0.1.0 (first release)
+First tagged version, after the development phase. Includes everything described above:
+* Flight Review graphs generated offline from `.ulg` logs, Flight Review links, PX4 warning markers.
+* Synced flight video with one- and two-point sync, slow motion, frame stepping, fullscreen.
+* Timed notes, spans and general notes with categories and colors, export as text, notes and
+  messages drawn over the video with Timing and Size menus.
+* Dockable panels, floating windows, saved layouts and project files.
+* Plot editing, isolate plot, light PNG export, graph presets, undo/redo, light and dark theme,
+  Help → About.
+* Fixes in this release: clicking a legend entry no longer moves the cursor; the Positions preset
+  hides the barometer altitude; exit crash on Ubuntu 22.04 fixed by pinning PySide6 and QtAds.

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov", ".3gp", ".3g2", ".mkv", ".webm", ".avi", ".mts", ".m2ts")
 
@@ -89,13 +89,18 @@ class MpvWidget(QOpenGLWidget):
             video_timing_offset=0, loglevel="error")
         self.info = VideoInfo()
         # notes / log messages drawn over the picture, top right (a child widget, so it
-        # follows the video into fullscreen)
-        self.overlay = QLabel(self)
-        self.overlay.setTextFormat(Qt.RichText)
-        self.overlay.setWordWrap(True)
+        # follows the video into fullscreen). One box per item, so each flashes on its own.
+        self.overlay = QWidget(self)
         self.overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.overlay.setStyleSheet("background: rgba(0, 0, 0, 150); color: white; "
-                                   "border-radius: 6px; padding: 6px 8px; font-size: 13px;")
+        # the app stylesheet paints plain widgets opaque: keep only the boxes visible
+        self.overlay.setAttribute(Qt.WA_TranslucentBackground)
+        self.overlay.setObjectName("videoOverlay")
+        self.overlay.setStyleSheet("#videoOverlay { background: transparent; }")
+        self._ov_layout = QVBoxLayout(self.overlay)
+        self._ov_layout.setContentsMargins(0, 0, 0, 0)
+        self._ov_layout.setSpacing(4)
+        self._ov_boxes: list[QLabel] = []
+        self._ov_font = 13          # px; the overlay's Size menu changes it
         self.overlay.hide()
         self._render = None
         self._get_proc = None
@@ -124,27 +129,56 @@ class MpvWidget(QOpenGLWidget):
         if value:
             self.fileLoaded.emit()
 
-    def set_overlay_html(self, html: str, flash: float = 0.0):
-        """flash 0..1 brightens the box (a small pulse around a note's / message's time)."""
-        if not html:
+    def set_overlay_font(self, px: int):
+        """Overlay text size in pixels; the boxes widen with it."""
+        self._ov_font = int(px)
+        for box in self._ov_boxes:
+            box._flash_level = None   # restyle on the next update
+        if self.overlay.isVisible():
+            self._place_overlay()
+
+    def _new_box(self) -> QLabel:
+        box = QLabel(self.overlay)
+        box.setTextFormat(Qt.RichText)
+        box.setWordWrap(True)
+        box.setAttribute(Qt.WA_TransparentForMouseEvents)
+        box._flash_level = None
+        self._ov_layout.addWidget(box)
+        return box
+
+    def set_overlay_items(self, items: list[tuple[str, float]]):
+        """items: (html, flash 0..1) per box; flash gently brightens that box only."""
+        if not items:
             self.overlay.hide()
             return
-        level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
-        if level != getattr(self, "_flash_level", None):
-            self._flash_level = level
-            k = level / 8
-            r, g, b, a = (round(0 + 85 * k), round(0 + 85 * k), round(0 + 100 * k), round(150 + 70 * k))
-            self.overlay.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
-                                       "border-radius: 6px; padding: 6px 8px; font-size: 13px;")
-        if html != self.overlay.text():
-            self.overlay.setText(html)
+        while len(self._ov_boxes) < len(items):
+            self._ov_boxes.append(self._new_box())
+        for i, box in enumerate(self._ov_boxes):
+            if i >= len(items):
+                box.hide()
+                continue
+            html, flash = items[i]
+            level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
+            if level != box._flash_level:
+                box._flash_level = level
+                k = level / 8
+                r, g, b, a = (round(0 + 40 * k), round(0 + 40 * k), round(0 + 55 * k),
+                              round(150 + 35 * k))
+                box.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
+                                  f"border-radius: 6px; padding: 6px 8px; font-size: {self._ov_font}px;")
+            if html != box.text():
+                box.setText(html)
+            box.show()
         self.overlay.setVisible(True)
         self._place_overlay()
 
     def _place_overlay(self):
-        w = max(120, min(int(self.width() * 0.45), 480))
+        cap = int(480 * self._ov_font / 13)
+        w = max(120, min(int(self.width() * 0.45), cap))
         self.overlay.setFixedWidth(w)
-        self.overlay.adjustSize()
+        lay = self._ov_layout
+        self.overlay.setFixedHeight(lay.heightForWidth(w) if lay.hasHeightForWidth()
+                                    else lay.sizeHint().height())
         self.overlay.move(self.width() - self.overlay.width() - 10, 10)
         self.overlay.raise_()
 

@@ -304,6 +304,16 @@ class GraphPlot:
             out.append((SignalKey.parse(key).label, curve))
         return out
 
+    def hide_series(self, label: str):
+        """Hide a series by its legend name (same as clicking it in the legend)."""
+        for name, item in self.series_items:
+            if name == label and item.isVisible():
+                item.setVisible(False)
+                for sample, _ in self.legend.items:
+                    if sample.item is item:
+                        sample.update()
+                self.style_changed()
+
     def set_title(self, title: str):
         self.title = title
         self.item.setTitle(title, **self._title_opts)
@@ -757,6 +767,11 @@ class GraphPanel(QWidget):
         pos = ev.scenePos()
         for p in self._time_plots():
             if p.vb.sceneBoundingRect().contains(pos):
+                if p.legend.isVisible() and p.legend.sceneBoundingRect().contains(pos):
+                    # a click on the legend only shows / hides a series: not a cursor move
+                    self.activated.emit(self)
+                    _highlight(p)
+                    return
                 self.bus.seek(p.vb.mapSceneToView(pos).x())
                 self.activated.emit(self)
                 _highlight(p)

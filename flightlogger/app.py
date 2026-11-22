@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
                                QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QSizePolicy, QWidget, QTextEdit, QToolBar, QToolButton)
@@ -33,6 +33,9 @@ from .video.mpv_widget import VIDEO_EXTENSIONS
 from .video.video_panel import VideoPanel
 
 STEP_SMALL, STEP_MEDIUM, STEP_LARGE = 0.1, 1.0, 10.0
+
+# Series hidden by default in a preset panel: {graph id: [legend names]}
+PRESET_HIDDEN_SERIES = {"altitude_estimate": ["Barometer Altitude"]}
 
 # Quick graph groups for "New graph panel" (Flight Review graph ids; missing ones are skipped)
 GRAPH_PRESETS = {
@@ -213,6 +216,7 @@ class MainWindow(QMainWindow):
         self._panel_seq = 0
         self.undo_mgr = UndoManager(self)
         self._loader: _LoadThread | None = None
+        self._load_threads: set = set()
         self.notes = NotesModel(self)
         self.layouts = LayoutStore()
         self.recent = RecentProjects()
@@ -346,6 +350,10 @@ class MainWindow(QMainWindow):
             for gid in GRAPH_PRESETS[name]:
                 if gid in self.log.graphs:
                     panel.add_graph(gid)
+                    for plot in panel.plots:
+                        if plot.graph is not None and plot.graph.id == gid:
+                            for label in PRESET_HIDDEN_SERIES.get(gid, ()):
+                                plot.hide_series(label)
         self._set_active(panel)
         return panel
 
@@ -721,6 +729,28 @@ class MainWindow(QMainWindow):
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
         self._fill_window_menu()
 
+        help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction("&About FlightLogger", self.show_about)
+
+    def show_about(self):
+        from . import __version__
+        box = QMessageBox(self)
+        box.setWindowTitle(f"About FlightLogger {__version__}")
+        logo = Path(__file__).parent / "resources" / "flightlogger.svg"
+        if logo.exists():
+            box.setIconPixmap(QIcon(str(logo)).pixmap(64, 64))
+        box.setTextFormat(Qt.RichText)
+        box.setText(f"<h3>FlightLogger {__version__}</h3>"
+                    "<p>Desktop viewer for PX4 <code>.ulg</code> flight logs with Flight Review "
+                    "graphs, synced flight video and timeline notes.</p>"
+                    "<p>All the code is entirely AI generated.</p>"
+                    "<p>Graphs ported from <a href=\"https://github.com/PX4/flight_review\">PX4 Flight "
+                    "Review</a> (BSD-3-Clause).</p>"
+                    "<p><a href=\"https://github.com/FastLab-UNIPD/FlightLogger\">"
+                    "github.com/FastLab-UNIPD/FlightLogger</a></p>")
+        box.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        box.exec()
+
     # --- stepping ---
     def step(self, dt: float):
         self.clock.step_seconds(dt)
@@ -760,12 +790,32 @@ class MainWindow(QMainWindow):
     def open_log(self, path: str, source_url: str | None = None):
         self._pending_source_url = source_url
         self.clock.pause()
+        self._dismiss_load_dialogs()   # never stack a second dialog on an unfinished one
         dlg = QProgressDialog(f"Loading {Path(path).name}…", None, 0, 0, self)
+        dlg.setObjectName("loadProgress")
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(300)
-        self._loader = _LoadThread(path)
-        self._loader.loaded.connect(lambda log, err: (dlg.close(), self._on_loaded(log, err)))
-        self._loader.start()
+        loader = _LoadThread(path)
+        self._loader = loader
+        self._load_threads.add(loader)   # keep the thread object alive until it has finished
+        loader.finished.connect(lambda l=loader: self._load_threads.discard(l))
+        # only the newest load may fill the window; an older one is ignored
+        loader.loaded.connect(lambda log, err, l=loader: self._on_load_finished(l, log, err))
+        loader.start()
+
+    def _dismiss_load_dialogs(self):
+        """Close every "Loading ..." dialog (also one whose show timer is still pending)."""
+        for d in self.findChildren(QProgressDialog, "loadProgress"):
+            d.reset()
+            d.hide()
+            d.setParent(None)
+            d.deleteLater()
+
+    def _on_load_finished(self, loader, log, err: str):
+        if loader is not self._loader:
+            return
+        self._dismiss_load_dialogs()
+        self._on_loaded(log, err)
 
     def _on_loaded(self, log: FlightLog | None, err: str):
         self._loader = None

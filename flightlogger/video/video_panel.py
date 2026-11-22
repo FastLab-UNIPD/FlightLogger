@@ -175,6 +175,8 @@ class VideoPanel(QWidget):
         row1b.addWidget(QLabel("Over video"))
         row1b.addWidget(self.ov_notes_btn)
         row1b.addWidget(self.ov_msgs_btn)
+        row1b.addWidget(self._build_timing_menu())
+        row1b.addWidget(self._build_size_menu())
         row1b.addStretch(1)
 
         def tb(text, tip, slot, checkable=False, icon=None, variant="neutral"):
@@ -292,6 +294,87 @@ class VideoPanel(QWidget):
     FLASH_IN, FLASH_OUT = 0.4, 0.7   # background flash: fades in before / out after the timestamp
 
     show_markers = True
+    LEAD_CHOICES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)     # seconds shown before a note
+    HOLD_CHOICES = (0.0, 1.0, 2.0, 4.0, 6.0, 10.0)         # seconds kept after its end
+
+    def _build_timing_menu(self) -> QToolButton:
+        """Small dropdown next to the Notes / Messages toggles: how long a note is shown
+        before its start and after its end (saved between sessions)."""
+        from PySide6.QtGui import QActionGroup
+        from PySide6.QtWidgets import QMenu
+        from ..project import Settings
+        st = Settings()
+        for key, attr in (("overlay_note_lead", "NOTE_LEAD"), ("overlay_note_hold", "NOTE_HOLD")):
+            v = st.get(key)
+            if isinstance(v, (int, float)) and 0 <= v <= 60:
+                setattr(self, attr, float(v))
+        btn = QToolButton(text="Timing ▾", toolTip="How long notes show before and after their time")
+        btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(btn)
+        self._timing_groups = []
+        for title, choices, attr, key in (
+                ("Appear before", self.LEAD_CHOICES, "NOTE_LEAD", "overlay_note_lead"),
+                ("Stay after", self.HOLD_CHOICES, "NOTE_HOLD", "overlay_note_hold")):
+            sub = menu.addMenu(title)
+            group = QActionGroup(sub)
+            group.setExclusive(True)
+            cur = getattr(self, attr)
+            vals = sorted(set(choices) | {cur})
+            for v in vals:
+                a = sub.addAction("none" if v == 0 else f"{v:g} s")
+                a.setCheckable(True)
+                a.setChecked(v == cur)
+                group.addAction(a)
+                a.triggered.connect(lambda _c=False, v=v, attr=attr, key=key: self._set_timing(attr, key, v))
+            self._timing_groups.append(group)
+        btn.setMenu(menu)
+        return btn
+
+    SIZE_CHOICES = (("Small", 11), ("Medium", 13), ("Large", 17), ("Extra large", 22))
+    overlay_font = 13
+
+    def _build_size_menu(self) -> QToolButton:
+        """Dropdown for the size of the text and boxes drawn over the video (saved)."""
+        from PySide6.QtGui import QActionGroup
+        from PySide6.QtWidgets import QMenu
+        from ..project import Settings
+        v = Settings().get("overlay_font")
+        if isinstance(v, (int, float)) and 8 <= v <= 48:
+            self.overlay_font = int(v)
+        btn = QToolButton(text="Size ▾", toolTip="Size of the notes and messages over the video")
+        btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(btn)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        for label, px in self.SIZE_CHOICES:
+            a = menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(px == self.overlay_font)
+            group.addAction(a)
+            a.triggered.connect(lambda _c=False, px=px: self._set_overlay_font(px))
+        self._size_group = group
+        btn.setMenu(menu)
+        return btn
+
+    def _set_overlay_font(self, px: int):
+        from ..project import Settings
+        self.overlay_font = int(px)
+        try:
+            Settings().set("overlay_font", int(px))
+        except OSError:
+            pass
+        if self.video is not None:
+            self.video.set_overlay_font(px)
+            self.update_overlay()
+
+    def _set_timing(self, attr: str, key: str, value: float):
+        from ..project import Settings
+        setattr(self, attr, float(value))
+        try:
+            Settings().set(key, float(value))
+        except OSError:
+            pass
+        self.update_overlay()
 
     def set_overlay(self, notes: bool | None = None, messages: bool | None = None):
         if notes is not None:
@@ -311,7 +394,7 @@ class VideoPanel(QWidget):
             return
         from html import escape
         t = self.bus.t
-        rows, flash = [], 0.0
+        rows: list[tuple[str, float]] = []   # (html, flash) per box
 
         def pulse(dt: float) -> float:   # dt = now - event time
             if -self.FLASH_IN <= dt <= 0:
@@ -320,23 +403,37 @@ class VideoPanel(QWidget):
                 return 1 - dt / self.FLASH_OUT
             return 0.0
 
+        def span_pulse(start: float, end: float) -> float:   # lit for the whole span
+            if t < start:
+                return pulse(t - start)
+            if t <= end:
+                return 1.0
+            return pulse(t - end)
+
         if self.overlay_notes:
             for n in self.notes_source():
                 if n.general:
                     continue
-                end = n.t_end if n.t_end is not None else n.t + self.NOTE_HOLD
-                if n.t - self.NOTE_LEAD <= t <= end:
-                    flash = max(flash, pulse(t - n.t))
+                if n.t_end is None:
+                    shown_until = n.t + self.NOTE_HOLD
+                    flash = pulse(t - n.t)
+                else:
+                    # a span is on screen from before its start until after its end, with the
+                    # same offsets as an instant note, and flashes for its whole length
+                    shown_until = n.t_end + self.NOTE_HOLD
+                    flash = span_pulse(n.t, n.t_end)
+                if n.t - self.NOTE_LEAD <= t <= shown_until:
                     body = f" – {escape(n.text.strip().splitlines()[0])}" if n.text.strip() else ""
-                    rows.append(f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}')
+                    rows.append((f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}',
+                                 flash))
         if self.overlay_messages:
             colors = {"error": "#ff7b72", "warning": "#f0c04c"}
             for m in self.messages_source():
                 if t - self.MSG_HOLD <= m.t <= t + self.MSG_LEAD:
-                    flash = max(flash, pulse(t - m.t))
                     c = colors.get(m.level.lower(), "#cccccc")
-                    rows.append(f'<span style="color:{c}">{escape(m.level)}</span> {escape(m.text)}')
-        self.video.set_overlay_html("<br>".join(rows[-6:]), flash=flash)
+                    rows.append((f'<span style="color:{c}">{escape(m.level)}</span> {escape(m.text)}',
+                                 pulse(t - m.t)))
+        self.video.set_overlay_items(rows[-6:])
 
     # --- markers on the progress bar ---
     def set_show_markers(self, on: bool):
@@ -362,6 +459,7 @@ class VideoPanel(QWidget):
             return False
         if self.video is None:
             self.video = MpvWidget()
+            self.video.set_overlay_font(self.overlay_font)
             self.video.fileLoaded.connect(self._on_file_loaded)
             self.video.doubleClicked.connect(self.toggle_fullscreen)
             self.surface_lay.addWidget(self.video)
