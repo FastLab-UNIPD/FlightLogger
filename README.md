@@ -2,7 +2,7 @@
 
 # FlightLogger
 
-> **Note:** all the code in this repository is entirely AI generated. The app is tested and working on **Ubuntu 24.04**. This branch (`ubuntu22`) holds the modifications made for **Ubuntu 22.04** (pinned PySide6 / QtAds versions that avoid an exit crash); see the other branches for the Ubuntu 24.04 version.
+> **Note:** all the code in this repository is entirely AI generated. The app is tested and working on **Ubuntu 24.04**. This branch (`Development-Ubuntu-22.04`) holds the modifications made for **Ubuntu 22.04** (pinned PySide6 / QtAds versions that avoid an exit crash); see the other branches for the Ubuntu 24.04 version.
 
 Desktop viewer for PX4 `.ulg` flight logs. It reproduces
 [Flight Review](https://github.com/PX4/flight_review)'s graphs offline and adds
