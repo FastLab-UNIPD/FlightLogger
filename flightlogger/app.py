@@ -34,12 +34,9 @@ from .video.video_panel import VideoPanel
 
 STEP_SMALL, STEP_MEDIUM, STEP_LARGE = 0.1, 1.0, 10.0
 
-# Series hidden by default in a preset panel: {graph id: [legend names]}
-PRESET_HIDDEN_SERIES = {"altitude_estimate": ["Barometer Altitude"]}
-
 # Quick graph groups for "New graph panel" (Flight Review graph ids; missing ones are skipped)
 GRAPH_PRESETS = {
-    "Positions": ["altitude_estimate", "local_position_x", "local_position_y", "local_position_z"],
+    "Positions": ["local_position_x", "local_position_y", "local_position_z"],
     "Angles": ["roll_angle", "pitch_angle", "yaw_angle"],
     "Angular rates": ["roll_angular_rate", "pitch_angular_rate", "yaw_angular_rate"],
     "Velocity and inputs": ["velocity", "manual_control_inputs_radio_or_joystick"],
@@ -350,10 +347,6 @@ class MainWindow(QMainWindow):
             for gid in GRAPH_PRESETS[name]:
                 if gid in self.log.graphs:
                     panel.add_graph(gid)
-                    for plot in panel.plots:
-                        if plot.graph is not None and plot.graph.id == gid:
-                            for label in PRESET_HIDDEN_SERIES.get(gid, ()):
-                                plot.hide_series(label)
         self._set_active(panel)
         return panel
 
