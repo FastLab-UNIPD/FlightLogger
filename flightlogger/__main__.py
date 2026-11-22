@@ -5,6 +5,12 @@ import sys
 
 
 def main() -> int:
+    # Before any Qt / OpenGL object exists: use the NVIDIA GPU on hybrid laptops when that is
+    # safe (see gpu.py; FLIGHTLOGGER_GPU=default turns it off).
+    from . import gpu
+    from .project import Settings as _Settings
+    gpu.configure(_Settings())
+
     from PySide6.QtWidgets import QApplication
 
     from .ui.theme import apply_theme

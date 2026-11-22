@@ -83,6 +83,16 @@ Installs the system packages it needs (asks for sudo only if some are missing:
 creates `.venv`, installs the Python dependencies and adds FlightLogger to the
 applications menu. Requires Python 3.10+ (22.04 ships 3.10, 24.04 ships 3.12).
 
+## Graphics (NVIDIA laptops)
+
+On a hybrid laptop (Intel/AMD + NVIDIA, "on-demand" mode, X11) FlightLogger renders on the NVIDIA GPU
+automatically, and mpv then decodes video directly on it. It only does so when the proprietary NVIDIA
+driver is loaded and a quick one-time test (repeated after a driver update) shows OpenGL really runs
+there; on every other machine (Intel/AMD only, NVIDIA only, Wayland, open `nouveau` driver) nothing
+changes. Override with the environment variable `FLIGHTLOGGER_GPU`: `default` (never touch the GPU
+choice), `nvidia` (force, skip the test) or `auto` (the default). If you already set the PRIME
+variables (`__NV_PRIME_RENDER_OFFLOAD`, `__GLX_VENDOR_LIBRARY_NAME`) they are respected.
+
 ## Run
 
 ```bash
