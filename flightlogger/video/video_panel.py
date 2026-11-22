@@ -330,41 +330,43 @@ class VideoPanel(QWidget):
         btn.setMenu(menu)
         return btn
 
-    SIZE_CHOICES = (("Small", 11), ("Medium", 13), ("Large", 17), ("Extra large", 22))
-    overlay_font = 13
+    SIZE_CHOICES = (("Small", 0.8), ("Medium", 1.0), ("Large", 1.3), ("Extra large", 1.7))
+    overlay_scale = 1.0     # relative to the video size, so it also scales in fullscreen
 
     def _build_size_menu(self) -> QToolButton:
-        """Dropdown for the size of the text and boxes drawn over the video (saved)."""
+        """Dropdown for the size of the text and boxes drawn over the video (saved). Sizes are
+        relative to the video picture, not absolute pixels."""
         from PySide6.QtGui import QActionGroup
         from PySide6.QtWidgets import QMenu
         from ..project import Settings
-        v = Settings().get("overlay_font")
-        if isinstance(v, (int, float)) and 8 <= v <= 48:
-            self.overlay_font = int(v)
-        btn = QToolButton(text="Size ▾", toolTip="Size of the notes and messages over the video")
+        v = Settings().get("overlay_scale")
+        if isinstance(v, (int, float)) and 0.3 <= v <= 4:
+            self.overlay_scale = float(v)
+        btn = QToolButton(text="Size ▾", toolTip="Size of the notes and messages over the video "
+                                                 "(relative to the video size)")
         btn.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(btn)
         group = QActionGroup(menu)
         group.setExclusive(True)
-        for label, px in self.SIZE_CHOICES:
+        for label, scale in self.SIZE_CHOICES:
             a = menu.addAction(label)
             a.setCheckable(True)
-            a.setChecked(px == self.overlay_font)
+            a.setChecked(abs(scale - self.overlay_scale) < 1e-6)
             group.addAction(a)
-            a.triggered.connect(lambda _c=False, px=px: self._set_overlay_font(px))
+            a.triggered.connect(lambda _c=False, sc=scale: self._set_overlay_scale(sc))
         self._size_group = group
         btn.setMenu(menu)
         return btn
 
-    def _set_overlay_font(self, px: int):
+    def _set_overlay_scale(self, scale: float):
         from ..project import Settings
-        self.overlay_font = int(px)
+        self.overlay_scale = float(scale)
         try:
-            Settings().set("overlay_font", int(px))
+            Settings().set("overlay_scale", float(scale))
         except OSError:
             pass
         if self.video is not None:
-            self.video.set_overlay_font(px)
+            self.video.set_overlay_scale(scale)
             self.update_overlay()
 
     def _set_timing(self, attr: str, key: str, value: float):
@@ -459,7 +461,7 @@ class VideoPanel(QWidget):
             return False
         if self.video is None:
             self.video = MpvWidget()
-            self.video.set_overlay_font(self.overlay_font)
+            self.video.set_overlay_scale(self.overlay_scale)
             self.video.fileLoaded.connect(self._on_file_loaded)
             self.video.doubleClicked.connect(self.toggle_fullscreen)
             self.surface_lay.addWidget(self.video)

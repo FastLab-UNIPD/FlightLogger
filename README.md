@@ -39,7 +39,7 @@ is one click away.*
   PX4 warnings; notes and log messages can also be drawn over the picture (one
   semi-transparent box each, with a soft flash at the exact timestamp or for the whole
   length of a span). The **Timing** and **Size** menus set how long notes show before and
-  after their time and how large the overlay text is.
+  after their time and how large the overlay is, relative to the video size (so it also scales in fullscreen).
 
 **Notes on the timeline**
 * Timed notes and spans (with categories and custom colors) plus general untimed
@@ -152,7 +152,7 @@ to a text file. In the **Video** panel, the *Notes* / *Messages* buttons under t
 progress bar draw them over the picture: an instant note appears shortly before its time
 and stays a few seconds after; a span stays for its whole length. **Timing ▾** sets how
 long notes appear before and stay after (default 1.5 s and 4 s) and **Size ▾** sets the
-text size; both are remembered.
+overlay size (relative to the video, not fixed pixels); both are remembered.
 
 ## Projects and layouts
 

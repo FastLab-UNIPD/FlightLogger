@@ -100,7 +100,8 @@ class MpvWidget(QOpenGLWidget):
         self._ov_layout.setContentsMargins(0, 0, 0, 0)
         self._ov_layout.setSpacing(4)
         self._ov_boxes: list[QLabel] = []
-        self._ov_font = 13          # px; the overlay's Size menu changes it
+        self._ov_scale = 1.0        # relative size, set by the overlay's Size menu
+        self._ov_px = 0             # font size currently applied to the boxes
         self.overlay.hide()
         self._render = None
         self._get_proc = None
@@ -129,13 +130,20 @@ class MpvWidget(QOpenGLWidget):
         if value:
             self.fileLoaded.emit()
 
-    def set_overlay_font(self, px: int):
-        """Overlay text size in pixels; the boxes widen with it."""
-        self._ov_font = int(px)
-        for box in self._ov_boxes:
-            box._flash_level = None   # restyle on the next update
+    # Overlay sizes are proportional to the video picture, so a small panel and
+    # fullscreen look the same. Reference: 13 px text on a 460 px high video at scale 1.
+    OV_FONT_FRAC = 0.028      # text height as a fraction of the widget height
+    OV_WIDTH_FRAC = 0.30      # box width as a fraction of the widget width (times the scale)
+
+    def set_overlay_scale(self, scale: float):
+        """Relative size of the overlay (1.0 = default); the Size menu changes it."""
+        self._ov_scale = float(scale)
+        self._ov_px = 0
         if self.overlay.isVisible():
             self._place_overlay()
+
+    def _ov_font_px(self) -> int:
+        return max(8, round(self.height() * self.OV_FONT_FRAC * self._ov_scale))
 
     def _new_box(self) -> QLabel:
         box = QLabel(self.overlay)
@@ -143,14 +151,27 @@ class MpvWidget(QOpenGLWidget):
         box.setWordWrap(True)
         box.setAttribute(Qt.WA_TransparentForMouseEvents)
         box._flash_level = None
+        box._px = 0
         self._ov_layout.addWidget(box)
         return box
+
+    def _style_box(self, box: QLabel, level: int):
+        """Background brightness (flash level 0..8) and proportional text/padding of one box."""
+        box._flash_level, box._px = level, self._ov_px
+        k = level / 8
+        r, g, b, a = (round(40 * k), round(40 * k), round(55 * k), round(150 + 35 * k))
+        fp = self._ov_px
+        box.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
+                          f"border-radius: {round(fp * 0.46)}px; "
+                          f"padding: {round(fp * 0.46)}px {round(fp * 0.6)}px; font-size: {fp}px;")
 
     def set_overlay_items(self, items: list[tuple[str, float]]):
         """items: (html, flash 0..1) per box; flash gently brightens that box only."""
         if not items:
             self.overlay.hide()
             return
+        self._ov_px = self._ov_font_px()
+        self._ov_layout.setSpacing(max(2, round(self._ov_px * 0.3)))
         while len(self._ov_boxes) < len(items):
             self._ov_boxes.append(self._new_box())
         for i, box in enumerate(self._ov_boxes):
@@ -159,13 +180,8 @@ class MpvWidget(QOpenGLWidget):
                 continue
             html, flash = items[i]
             level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
-            if level != box._flash_level:
-                box._flash_level = level
-                k = level / 8
-                r, g, b, a = (round(0 + 40 * k), round(0 + 40 * k), round(0 + 55 * k),
-                              round(150 + 35 * k))
-                box.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
-                                  f"border-radius: 6px; padding: 6px 8px; font-size: {self._ov_font}px;")
+            if level != box._flash_level or self._ov_px != box._px:
+                self._style_box(box, level)
             if html != box.text():
                 box.setText(html)
             box.show()
@@ -173,13 +189,18 @@ class MpvWidget(QOpenGLWidget):
         self._place_overlay()
 
     def _place_overlay(self):
-        cap = int(480 * self._ov_font / 13)
-        w = max(120, min(int(self.width() * 0.45), cap))
+        if self._ov_px != self._ov_font_px():   # the video was resized: restyle the boxes
+            self._ov_px = self._ov_font_px()
+            self._ov_layout.setSpacing(max(2, round(self._ov_px * 0.3)))
+            for box in self._ov_boxes:
+                self._style_box(box, box._flash_level or 0)
+        w = max(120, min(int(self.width() * 0.5), int(self.width() * self.OV_WIDTH_FRAC * max(self._ov_scale, 1.0))))
         self.overlay.setFixedWidth(w)
         lay = self._ov_layout
         self.overlay.setFixedHeight(lay.heightForWidth(w) if lay.hasHeightForWidth()
                                     else lay.sizeHint().height())
-        self.overlay.move(self.width() - self.overlay.width() - 10, 10)
+        margin = max(6, round(self._ov_px * 0.77))
+        self.overlay.move(self.width() - self.overlay.width() - margin, margin)
         self.overlay.raise_()
 
     def resizeEvent(self, ev):
