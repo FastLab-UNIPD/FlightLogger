@@ -2,6 +2,8 @@
 
 # FlightLogger
 
+> **Note:** all the code in this repository is entirely AI generated. The app is tested and working on **Ubuntu 24.04**. The modifications needed for **Ubuntu 22.04** live in a separate branch, `ubuntu22`.
+
 Desktop viewer for PX4 `.ulg` flight logs. It reproduces
 [Flight Review](https://github.com/PX4/flight_review)'s graphs offline and adds
 what a review session with a ground-camera video needs: synced video, notes,
