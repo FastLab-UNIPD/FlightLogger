@@ -129,8 +129,8 @@ type the offset.
 
 Camera and flight controller clocks drift slightly apart. For long flights,
 add a **second sync point** late in the flight: unlink, line up another
-recognizable moment, and press **Add 2nd point**. FlightLogger then corrects
-the drift between the two points (shown under the sync controls; **Reset drift**
+recognizable moment, and press **2nd point**. FlightLogger then corrects
+the drift between the two points (shown next to the offset; **Reset**
 goes back to a single point). While the video plays it drives the cursor; before it starts
 and after it ends, the log keeps playing on its own. ⛶ (or double-click)
 shows the video fullscreen on the screen its panel is on; Esc leaves. In fullscreen, move the mouse to

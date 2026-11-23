@@ -295,34 +295,31 @@ class VideoPanel(QWidget):
         row3.addWidget(self.offset_spin)
         row3.addWidget(self.minus_f)
         row3.addWidget(self.plus_f)
-        row3.addStretch(1)
-        row3b = QHBoxLayout()   # right-hand buttons stay anchored right when the dock is narrow
+        row3b = QHBoxLayout()   # all sync buttons on one row, after "Jump log to"
         row3b.addWidget(self.event_box, 1)
         row3b.addWidget(self.sync_btn)
 
         # second sync point: corrects camera / flight-controller clock drift
-        self.point2_btn = icons.decorate(QPushButton("Add 2nd point"), "target")
-        self.point2_btn.setToolTip("Late in the flight: unlink, line up another moment, then press "
+        self.point2_btn = icons.decorate(QPushButton("2nd point"), "target")
+        self.point2_btn.setToolTip("Add 2nd point. Late in the flight: unlink, line up another moment, then press "
                                    "this to correct clock drift between camera and log")
         self.point2_btn.clicked.connect(self._second_point)
         self.sync_label = QLabel()
         theme.style_role(self.sync_label, "dim", "color: gray;")
         self.sync_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.sync_label.setMinimumWidth(0)
-        self.drift_reset_btn = QToolButton(text="Reset drift",
-                                           toolTip="Back to a single sync point (no drift correction)")
+        self.drift_reset_btn = QToolButton(text="Reset",
+                                           toolTip="Reset drift: back to a single sync point (no drift correction)")
         self.drift_reset_btn.clicked.connect(self.pb.reset_drift)
         icons.decorate(self.drift_reset_btn, "undo")
         self.drift_reset_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        row4 = QHBoxLayout()
-        row4.addWidget(self.sync_label, 1)
-        row4b = QHBoxLayout()
-        row4b.addStretch(1)
-        row4b.addWidget(self.drift_reset_btn)
-        row4b.addWidget(self.point2_btn)
+        row3b.addWidget(self.point2_btn)
+        row3b.addWidget(self.drift_reset_btn)
+        row3.addWidget(self.sync_label, 1)   # "Synced at 1 point ..." shares the Offset row
+        self.sync_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.banner = QLabel("Unlinked: put the video and the log cursor on the same moment, "
-                             "then press Sync here (or Add 2nd point, late in the flight, "
+                             "then press Sync here (or 2nd point, late in the flight, "
                              "to correct clock drift).")
         self.banner.setWordWrap(True)
         theme.style_role(self.banner, "banner", "background: #ffe7b0; color: #503000; padding: 3px;")
@@ -339,8 +336,6 @@ class VideoPanel(QWidget):
         lay.addLayout(row2)
         lay.addLayout(row3)
         lay.addLayout(row3b)
-        lay.addLayout(row4)
-        lay.addLayout(row4b)
         lay.addWidget(self.banner)
         lay.addWidget(self.info)
 
@@ -493,7 +488,9 @@ class VideoPanel(QWidget):
                     shown_until = n.t_end + self.NOTE_HOLD
                     flash = span_pulse(n.t, n.t_end)
                 if n.t - self.NOTE_LEAD <= t <= shown_until:
-                    body = f" – {escape(n.text.strip().splitlines()[0])}" if n.text.strip() else ""
+                    # the whole comment, one overlay line per line of the note
+                    body = (" – " + "<br>".join(escape(l) for l in n.text.strip().splitlines())
+                            if n.text.strip() else "")
                     rows.append((f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}',
                                  flash))
         if self.overlay_messages:

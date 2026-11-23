@@ -238,6 +238,13 @@ class NotesPanel(QWidget):
             if not n.general:
                 self.bus.seek(n.t)
 
+    def flush_edits(self):
+        """Apply a comment typed in the last moments (it is committed after a short delay):
+        call before saving, exporting or closing so nothing typed is left out."""
+        if self._text_timer.isActive() and self._current:
+            self._text_timer.stop()
+            self._edit(text=self.text.toPlainText())
+
     def _on_text(self):
         if not self._loading and self._current:
             self._text_timer.start()

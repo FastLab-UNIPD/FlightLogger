@@ -202,7 +202,8 @@ class _FloatingKeeper(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FlightLogger")
+        from . import TITLE_SUFFIX
+        self.setWindowTitle(f"FlightLogger{TITLE_SUFFIX}")
         self.setMinimumSize(1100, 700)
         self.resize(1500, 900)
         self.bus = TimeBus(self)
@@ -726,14 +727,15 @@ class MainWindow(QMainWindow):
         help_menu.addAction("&About FlightLogger", self.show_about)
 
     def show_about(self):
-        from . import __version__
+        from . import IS_DEV, __version__
         box = QMessageBox(self)
-        box.setWindowTitle(f"About FlightLogger {__version__}")
+        box.setWindowTitle(f"About FlightLogger {__version__}" + (" (development)" if IS_DEV else ""))
         logo = Path(__file__).parent / "resources" / "flightlogger.svg"
         if logo.exists():
             box.setIconPixmap(QIcon(str(logo)).pixmap(64, 64))
         box.setTextFormat(Qt.RichText)
-        box.setText(f"<h3>FlightLogger {__version__}</h3>"
+        dev = ("<p><b>Development version</b>: not an official release.</p>" if IS_DEV else "")
+        box.setText(f"<h3>FlightLogger {__version__}</h3>" + dev +
                     "<p>Desktop viewer for PX4 <code>.ulg</code> flight logs with Flight Review "
                     "graphs, synced flight video and timeline notes.</p>"
                     "<p>All the code is entirely AI generated.</p>"
@@ -911,7 +913,9 @@ class MainWindow(QMainWindow):
     def _update_title(self):
         name = (self.project_path.name if self.project_path
                 else self.log.path.name if self.log else None)
-        self.setWindowTitle(f"{name}[*] — FlightLogger" if name else "FlightLogger[*]")
+        from . import TITLE_SUFFIX
+        self.setWindowTitle(f"{name}[*] — FlightLogger{TITLE_SUFFIX}" if name
+                            else f"FlightLogger{TITLE_SUFFIX}[*]")
         self.setWindowModified(self._dirty)
 
     def _worth_saving(self) -> bool:
@@ -919,6 +923,7 @@ class MainWindow(QMainWindow):
 
     def _maybe_save(self) -> bool:
         """Ask to save unsaved work. False = the user cancelled."""
+        self.notes_panel.flush_edits()
         if not (self._dirty and self.interactive and self._worth_saving()):
             return True
         r = QMessageBox.question(
@@ -1024,6 +1029,7 @@ class MainWindow(QMainWindow):
 
     # --- projects ---
     def project_data(self) -> dict:
+        self.notes_panel.flush_edits()   # a comment typed a moment ago must be in the file
         video = self.video_panel.video_path or self.video_panel._pending_path
         log = None
         if self.log:
@@ -1265,6 +1271,7 @@ class MainWindow(QMainWindow):
             self.export_notes(path)
 
     def export_notes(self, path: str):
+        self.notes_panel.flush_edits()
         lines = []
         for n in self.notes.notes:
             when = "General" if n.general else (
