@@ -116,7 +116,8 @@ class TimelineWidget(pg.PlotWidget):
         for it in self._trim_items:
             pi.removeItem(it)
         self._trim_items = []
-        self.region.setBounds(trim if trim else (None, None))
+        self.region.setBounds(trim if trim else ((0.0, self.bus.duration) if self.bus.duration > 0
+                                                 else (None, None)))
         if not self.locked and self.bus.duration > 0:
             lo, hi = self._limits()
             self.vb.setLimits(xMin=lo, xMax=hi)
