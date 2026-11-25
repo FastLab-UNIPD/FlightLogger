@@ -4,10 +4,11 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QToolButton
 
 from ..log.ulog_loader import FlightLog
 from ..timebus import TimeBus
-from ..ui import theme
+from ..ui import icons, theme
 from .common import MODE_ALPHA_TIMELINE, show_preview_at, CURSOR_COLOR, TimeAxis, message_color, mode_color
 
 EVENT_COLORS = {"armed": "#b06000", "disarmed": "#b06000", "takeoff": "#007a50", "landed": "#007a50"}
@@ -15,6 +16,7 @@ EVENT_COLORS = {"armed": "#b06000", "disarmed": "#b06000", "takeoff": "#007a50",
 
 class TimelineWidget(pg.PlotWidget):
     contextRequested = Signal(object)   # global QPoint of a right click
+    lockChanged = Signal(bool)          # True = locked (whole flight), False = zoom/pan
 
     def __init__(self, bus: TimeBus, parent=None):
         super().__init__(parent, axisItems={"bottom": TimeAxis("bottom")})
@@ -60,13 +62,66 @@ class TimelineWidget(pg.PlotWidget):
         bus.trimChanged.connect(self._on_trim)
         self._trim_items: list = []
 
+        self.locked = True
+        self.lock_btn = QToolButton(self)
+        self.lock_btn.setCheckable(True)
+        self.lock_btn.setChecked(True)
+        self.lock_btn.setAutoRaise(True)
+        self.lock_btn.setFixedSize(22, 22)
+        self.lock_btn.setCursor(Qt.ArrowCursor)
+        self.lock_btn.setToolTip("Lock: timeline shows the whole flight / "
+                                 "Unlocked: wheel to zoom, drag to pan")
+        self.lock_btn.setIcon(icons.icon("lock"))
+        self.lock_btn.toggled.connect(self.set_locked)
+        self._place_lock_btn()
+
+    # --- lock / unlock (zoom and pan) ---
+    def _place_lock_btn(self):
+        self.lock_btn.move(max(0, self.width() - self.lock_btn.width() - 4), 3)
+        self.lock_btn.raise_()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if "lock_btn" in self.__dict__:      # resizeEvent(None) runs during pyqtgraph's init
+            self._place_lock_btn()
+
+    def _limits(self) -> tuple[float, float]:
+        dur = max(self.bus.duration, 1e-3)
+        t = self.bus.trim
+        return (t[0], t[1]) if t else (0.0, dur)
+
+    def set_locked(self, on: bool):
+        on = bool(on)
+        if self.lock_btn.isChecked() != on:
+            self.lock_btn.setChecked(on)   # re-enters through toggled
+            return
+        changed = on != self.locked
+        self.locked = on
+        self.lock_btn.setIcon(icons.icon("lock" if on else "unlock"))
+        self.vb.setMouseEnabled(x=not on, y=False)
+        dur = max(self.bus.duration, 1e-3)
+        if on:
+            self.vb.setLimits(xMin=0, xMax=dur)
+            self.vb.setXRange(0, dur, padding=0)
+        else:
+            lo, hi = self._limits()
+            self.vb.setLimits(xMin=lo, xMax=hi)
+            self.vb.setXRange(lo, hi, padding=0)
+        if changed:
+            self.lockChanged.emit(on)
+
     def _on_trim(self, trim):
         """Hidden parts: grey shading; the blue region cannot leave the visible part."""
         pi = self.getPlotItem()
         for it in self._trim_items:
             pi.removeItem(it)
         self._trim_items = []
-        self.region.setBounds(trim if trim else (None, None))
+        self.region.setBounds(trim if trim else ((0.0, self.bus.duration) if self.bus.duration > 0
+                                                 else (None, None)))
+        if not self.locked and self.bus.duration > 0:
+            lo, hi = self._limits()
+            self.vb.setLimits(xMin=lo, xMax=hi)
+            self.vb.setXRange(lo, hi, padding=0)
         if not trim:
             return
         dur = max(self.bus.duration, trim[1])
@@ -89,8 +144,9 @@ class TimelineWidget(pg.PlotWidget):
         if log is None:
             return
         dur = max(log.duration, 1e-3)
-        self.vb.setLimits(xMin=0, xMax=dur)
-        self.vb.setXRange(0, dur, padding=0)
+        lo, hi = (0.0, dur) if self.locked else self._limits()
+        self.vb.setLimits(xMin=lo, xMax=hi)
+        self.vb.setXRange(lo, hi, padding=0)
 
         for seg in log.mode_segments():
             color = mode_color(seg.nav_state, theme.mode_alpha(MODE_ALPHA_TIMELINE))

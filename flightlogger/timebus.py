@@ -50,6 +50,10 @@ class TimeBus(QObject):
     def set_x_range(self, x0: float, x1: float, source=None):
         if self.trim:
             x0, x1 = self._clamp_to_trim(x0, x1)
+        elif self.duration > 0:
+            x0, x1 = max(x0, 0.0), min(x1, self.duration)
+            if x1 <= x0:
+                x0, x1 = 0.0, self.duration
         if self.x_range and abs(self.x_range[0] - x0) < 1e-9 and abs(self.x_range[1] - x1) < 1e-9:
             return
         self.x_range = (x0, x1)
