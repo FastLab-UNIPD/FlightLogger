@@ -3,7 +3,7 @@
 # Official releases are plain "X.Y.Z"; every development build carries ".devN"
 # (e.g. "0.2.0.dev0"), which the program shows in its window title and About box.
 # On a release: drop the ".devN" part; right after it: set the next version with ".dev0".
-__version__ = "0.2.0.dev0"
+__version__ = "0.2.0"
 
 IS_DEV = "dev" in __version__
 # appended to the window title so a development build can never be mistaken for a release
