@@ -186,3 +186,23 @@ class Settings:
         d[key] = value
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(d, indent=1), encoding="utf-8")
+
+
+class LastDirs:
+    """Last folder used per kind of file dialog ("log", "video", "project", ...)."""
+
+    def __init__(self, directory: str | Path | None = None):
+        self._settings = Settings(directory)
+
+    def get(self, kind: str, fallback: str | Path) -> str:
+        d = (self._settings.get("last_dirs", {}) or {}).get(kind)
+        return d if d and Path(d).is_dir() else str(fallback)
+
+    def remember(self, kind: str, path: str | Path):
+        if not path:
+            return
+        p = Path(path)
+        d = p if p.is_dir() else p.parent
+        dirs = dict(self._settings.get("last_dirs", {}) or {})
+        dirs[kind] = str(d)
+        self._settings.set("last_dirs", dirs)

@@ -8,6 +8,8 @@ the TimeBus. FFT plots have a frequency axis and stay independent.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
@@ -336,10 +338,13 @@ class GraphPlot:
     def export_light(self):
         from PySide6.QtWidgets import QFileDialog
         from .plot_edit import export_light
+        from ..project import LastDirs
+        last = LastDirs()
         name = (self.title or "plot").replace(" ", "_").replace("/", "-")
         path, _ = QFileDialog.getSaveFileName(self.panel.window(), "Export plot (light mode)",
-                                              f"{name}.png", "PNG image (*.png)")
+                                              str(Path(last.get("png_export", Path.cwd())) / f"{name}.png"), "PNG image (*.png)")
         if path:
+            last.remember("png_export", path)
             export_light(self, path if path.lower().endswith(".png") else path + ".png")
 
     # --- context menu ---

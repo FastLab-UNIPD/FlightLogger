@@ -7,14 +7,16 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
-                               QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
+                               QDialog, QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressDialog, QSizePolicy, QWidget, QTextEdit, QToolBar, QToolButton)
 
 from .log.flight_review import DownloadCancelled, LinkError, download_log, parse_link
 from .log.ulog_loader import FlightLog
+from .notes.export import EXTENSIONS, FILE_FILTERS, render
+from .notes.export_dialog import ExportNotesDialog
 from .notes.model import NotesModel
 from .notes.panel import NotesPanel
-from .project import (PROJECT_EXT, LayoutStore, RecentProjects, Settings, b64, load_project,
+from .project import (PROJECT_EXT, LayoutStore, LastDirs, RecentProjects, Settings, b64, load_project,
                       save_project, unb64)
 from .playback import SPEED_PRESETS, Playback
 from .sync import Sync
@@ -220,6 +222,7 @@ class MainWindow(QMainWindow):
         self.recent = RecentProjects()
         self.project_path: Path | None = None
         self.settings = Settings()
+        self.last_dirs = LastDirs()
         self.message_mode = self.settings.get("message_markers", "warnings")
         if self.message_mode not in MESSAGE_FILTERS:
             self.message_mode = "warnings"
@@ -766,10 +769,12 @@ class MainWindow(QMainWindow):
     def open_video_dialog(self):
         start = str(Path(self.video_panel.video_path).parent) if self.video_panel.video_path else (
             str(self.log.path.parent) if self.log else str(Path.cwd()))
+        start = self.last_dirs.get("video", start)
         pattern = " ".join(f"*{e} *{e.upper()}" for e in VIDEO_EXTENSIONS)
         path, _ = QFileDialog.getOpenFileName(self, "Open flight video", start,
                                               f"Videos ({pattern});;All files (*)")
         if path:
+            self.last_dirs.remember("video", path)
             self.open_video(path)
 
     def open_video(self, path: str):
@@ -789,9 +794,10 @@ class MainWindow(QMainWindow):
 
     # --- log loading ---
     def open_log_dialog(self):
-        start = str(self.log.path.parent) if self.log else str(Path.cwd())
+        start = self.last_dirs.get("log", self.log.path.parent if self.log else Path.cwd())
         path, _ = QFileDialog.getOpenFileName(self, "Open PX4 log", start, "PX4 ULog (*.ulg);;All files (*)")
         if path:
+            self.last_dirs.remember("log", path)
             self.open_log(path)
 
     def open_log(self, path: str, source_url: str | None = None):
@@ -1067,10 +1073,13 @@ class MainWindow(QMainWindow):
                 start = str(self.log.path.with_suffix(PROJECT_EXT))
             else:
                 start = str(Path.cwd() / ("flight" + PROJECT_EXT))
+            if not self.project_path:   # a remembered folder only replaces the folder, not the name
+                start = str(Path(self.last_dirs.get("project", Path(start).parent)) / Path(start).name)
             path, _ = QFileDialog.getSaveFileName(self, "Save project", start,
                                                   f"FlightLogger project (*{PROJECT_EXT})")
             if not path:
                 return False
+            self.last_dirs.remember("project", path)
             if not path.endswith(PROJECT_EXT):
                 path += PROJECT_EXT
         path = Path(path or self.project_path)
@@ -1090,9 +1099,11 @@ class MainWindow(QMainWindow):
     def open_project_dialog(self):
         start = str(self.project_path.parent) if self.project_path else (
             str(self.log.path.parent) if self.log else str(Path.cwd()))
+        start = self.last_dirs.get("project", start)
         path, _ = QFileDialog.getOpenFileName(self, "Open project", start,
                                               f"FlightLogger project (*{PROJECT_EXT})")
         if path:
+            self.last_dirs.remember("project", path)
             self.open_project(path)
 
     def _fill_recent_menu(self):
@@ -1115,8 +1126,10 @@ class MainWindow(QMainWindow):
                                  f"The project's {what} was not found:\n{path}\n\nLocate it?")
         if r != QMessageBox.Yes:
             return None
-        found, _ = QFileDialog.getOpenFileName(self, f"Locate {what}", str(Path(path).parent),
-                                               file_filter)
+        found, _ = QFileDialog.getOpenFileName(
+            self, f"Locate {what}", self.last_dirs.get("locate", Path(path).parent), file_filter)
+        if found:
+            self.last_dirs.remember("locate", found)
         return found or None
 
     def open_project(self, path: str | Path) -> bool:
@@ -1274,25 +1287,45 @@ class MainWindow(QMainWindow):
         self._apply_messages()
 
     def export_notes_dialog(self):
-        if not len(self.notes):
+        if not self.interactive:
+            return
+        has_log = self.log is not None
+        if not len(self.notes) and not has_log:
             QMessageBox.information(self, "Export notes", "There are no notes to export.")
             return
-        start = str((self.log.path.parent if self.log else Path.cwd()) / "notes.txt")
-        path, _ = QFileDialog.getSaveFileName(self, "Export notes", start, "Text files (*.txt)")
-        if path:
-            self.export_notes(path)
+        dlg = ExportNotesDialog(self, self.settings.get("notes_export_format", "txt"),
+                                bool(self.settings.get("notes_export_messages", False)),
+                                self.settings.get("notes_export_level", "warnings"), has_log)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        fmt, include, level = dlg.values()
+        if not len(self.notes) and not include:
+            QMessageBox.information(self, "Export notes", "There are no notes to export.")
+            return
+        self.settings.set("notes_export_format", fmt)
+        self.settings.set("notes_export_messages", include)
+        self.settings.set("notes_export_level", level)
+        stem = (self.project_path.stem if self.project_path
+                else self.log.path.stem if self.log else "notes")
+        base = self.project_path.parent if self.project_path else (
+            self.log.path.parent if self.log else Path.cwd())
+        start = str(Path(self.last_dirs.get("notes_export", base)) / f"Notes - {stem}{EXTENSIONS[fmt]}")
+        path, _ = QFileDialog.getSaveFileName(self, "Export notes", start, FILE_FILTERS[fmt])
+        if not path:
+            return
+        if not Path(path).suffix:
+            path += EXTENSIONS[fmt]
+        self.last_dirs.remember("notes_export", path)
+        self.export_notes(path, fmt, include, level)
 
-    def export_notes(self, path: str):
+    def export_notes(self, path: str, fmt: str = "txt", include_messages: bool = False,
+                     level: str = "warnings"):
         self.notes_panel.flush_edits()
-        lines = []
-        for n in self.notes.notes:
-            when = "General" if n.general else (
-                fmt_time(n.t, 1) + ("" if n.t_end is None else f" – {fmt_time(n.t_end, 1)}"))
-            lines.append(f"[{when}] {n.category}: {n.title}")
-            if n.text.strip():
-                lines += ["    " + l for l in n.text.strip().splitlines()]
-            lines.append("")
-        Path(path).write_text("\n".join(lines), encoding="utf-8")
+        msgs = filter_messages(self.log.messages(), level) if include_messages and self.log else []
+        title = (self.project_path.stem if self.project_path
+                 else self.log.path.stem if self.log else "")
+        Path(path).write_text(render(self.notes.notes, fmt, msgs, title),
+                              encoding="utf-8", newline="")
         self.statusBar().showMessage(f"Exported {len(self.notes)} notes to {path}", 5000)
 
     def set_message_mode(self, mode: str):
