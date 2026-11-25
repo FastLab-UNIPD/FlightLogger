@@ -252,7 +252,8 @@ def available_presets(encoders: dict) -> list[tuple[str, str, bool, str]]:
 # --------------------------------------------------------------------------- probing
 
 def probe_video(path) -> dict:
-    """{"width", "height", "fps", "duration", "audio_codec"} (audio_codec None without audio)."""
+    """{"width", "height", "fps", "duration", "audio_codec", "rotation"}; width/height are those of
+    the displayed (auto-rotated) frame; audio_codec is None without audio."""
     r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
                         "-show_format", str(path)], capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
@@ -277,8 +278,21 @@ def probe_video(path) -> dict:
             break
         except (TypeError, ValueError):
             pass
-    return {"width": int(v["width"]), "height": int(v["height"]), "fps": fps, "duration": dur,
-            "audio_codec": a.get("codec_name") if a else None}
+    rot = 0
+    for sd in v.get("side_data_list") or []:
+        if "rotation" in sd:
+            rot = sd["rotation"]
+    if not rot:
+        rot = (v.get("tags") or {}).get("rotate", 0)
+    try:
+        rot = int(round(float(rot))) % 360
+    except (TypeError, ValueError):
+        rot = 0
+    w, h = int(v["width"]), int(v["height"])
+    if rot in (90, 270):      # ffmpeg auto-rotates: the output frame has swapped sides
+        w, h = h, w
+    return {"width": w, "height": h, "fps": fps, "duration": dur,
+            "audio_codec": a.get("codec_name") if a else None, "rotation": rot}
 
 
 # --------------------------------------------------------------------------- command
