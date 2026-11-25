@@ -35,6 +35,12 @@ class UndoManager:
         self._notes_depth = depth
         self._changed()
 
+    def record_trim(self, prev):
+        """The hidden time range changed from ``prev`` ((t0, t1) or None)."""
+        self.undo_stack.append(("trim", prev))
+        self.redo_stack.clear()
+        self._changed()
+
     def on_panel_changed(self, panel):
         if self._busy:
             return
@@ -64,6 +70,16 @@ class UndoManager:
                     if ok:
                         dst.append(entry)
                         break
+                elif entry[0] == "trim":
+                    bus = self.win.bus
+                    now = bus.trim
+                    if entry[1]:
+                        bus.set_trim(*entry[1])
+                    else:
+                        bus.clear_trim()
+                    dst.append(("trim", now))
+                    self.win._set_dirty(True)
+                    break
                 else:
                     _, pid, specs = entry
                     panel = self.win.panels.get(pid, (None, None))[0]

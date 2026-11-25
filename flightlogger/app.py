@@ -764,6 +764,8 @@ class MainWindow(QMainWindow):
         v.addMenu(self._build_panel_menu(QMenu("New &graph panel", self)))
         v.addAction(QAction(icons.icon("note"), "Add &note at cursor", self,
                             triggered=self.add_note))  # key: N
+        trim_menu = v.addMenu("Hide &time range")
+        self._add_trim_actions(trim_menu)
         self.layout_menu = v.addMenu(icons.icon("layout"), "&Layouts")
         self.layout_menu.aboutToShow.connect(self._fill_layout_menu)
         msg_menu = v.addMenu("Log &messages on graphs")
@@ -1151,6 +1153,7 @@ class MainWindow(QMainWindow):
                 "sync": self.clock.sync.to_dict(),
                 "cursor": self.bus.t,
                 "x_range": list(self.bus.x_range) if self.bus.x_range else None,
+                **({"trim": list(self.bus.trim)} if self.bus.trim else {}),
                 "speed": self.clock.speed,
                 "notes": self.notes.to_list(),
                 "layout": self.capture_layout()}
@@ -1248,6 +1251,12 @@ class MainWindow(QMainWindow):
                                   "Videos (*);;All files (*)")
 
         def finish():
+            try:   # optional key (newer projects): the hidden time range
+                tr = data.get("trim")
+                if tr and len(tr) == 2:
+                    self.bus.set_trim(float(tr[0]), float(tr[1]))
+            except (TypeError, ValueError):
+                pass
             if data.get("x_range"):
                 self.bus.set_x_range(*data["x_range"], None)
             self.bus.seek(float(data.get("cursor", 0.0)))
@@ -1344,8 +1353,43 @@ class MainWindow(QMainWindow):
             a.setChecked(self.timeline.layer_visible[layer])
             a.toggled.connect(lambda on, layer=layer: self._on_timeline_layer(layer, on))
         m.addSeparator()
+        self._add_trim_actions(m)
+        m.addSeparator()
         m.addAction("Add note at cursor", self.add_note)
         m.exec(pos)
+
+    # --- hide a time range (project-wide; graphs, timeline and track show only the rest) ---
+    def _add_trim_actions(self, menu):
+        menu.addAction("Hide before cursor", self.hide_before_cursor)
+        menu.addAction("Hide after cursor", self.hide_after_cursor)
+        menu.addAction("Show whole flight", self.show_whole_flight)
+
+    def set_trim(self, t0=None, t1=None) -> bool:
+        """Hide the flight outside [t0, t1] (None keeps that edge). Undoable, marks the project dirty."""
+        if self.log is None:
+            return False
+        prev = self.bus.trim
+        if not self.bus.set_trim(t0, t1):
+            self.statusBar().showMessage("Cannot hide: nothing would be left", 3000)
+            return False
+        if self.bus.trim != prev:
+            self.undo_mgr.record_trim(prev)
+            self._set_dirty(True)
+        return True
+
+    def hide_before_cursor(self):
+        return self.set_trim(t0=self.bus.t)
+
+    def hide_after_cursor(self):
+        return self.set_trim(t1=self.bus.t)
+
+    def show_whole_flight(self):
+        if self.log is None or self.bus.trim is None:
+            return
+        prev = self.bus.trim
+        self.bus.clear_trim()
+        self.undo_mgr.record_trim(prev)
+        self._set_dirty(True)
 
     def _on_timeline_layer(self, layer: str, on: bool):
         self.settings.set(f"timeline_{layer}", bool(on))
