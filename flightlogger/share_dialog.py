@@ -89,7 +89,9 @@ class ShareDialog(QDialog):
         self.video_cb = QCheckBox("Include video" + (f" ({video_mb:.0f} MB)" if video_mb else ""))
         self.video_cb.setChecked(video_mb is not None)
         self.video_cb.setEnabled(video_mb is not None)
-        self.zip_cb = QCheckBox("Also create a .zip")
+        self.zip_cb = QCheckBox("Pack everything into a single .zip file (no folder)")
+        self.zip_cb.setToolTip("Creates only <name>.zip. It contains the project folder (project file, log and "
+                               "video), ready to send; the receiver unzips it and opens the .flproj.")
         for cb in (self.log_cb, self.video_cb, self.zip_cb):
             lay.addWidget(cb)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

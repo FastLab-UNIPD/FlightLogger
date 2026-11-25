@@ -51,8 +51,10 @@ SVG = {
     "graph": '<path d="M4 4v16h16"/><path d="M7 14l4-4 3 3 5-6"/>',
     "box_zoom": '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4M4 15v4M4 12v0" stroke-dasharray="2.4 2.6"/>'
                 '<path d="M4 4h6M4 4v6" /><circle cx="14.5" cy="14.5" r="4.5"/><path d="M18 18l3 3"/>',
-    "lock": '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
-    "unlock": '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/>',
+    "lock": '<g stroke-width="2.8"><rect x="4.5" y="11" width="15" height="10" rx="2.2"/>'
+            '<path d="M7.8 11V8a4.2 4.2 0 0 1 8.4 0v3"/></g>',
+    "unlock": '<g stroke-width="2.8"><rect x="4.5" y="11" width="15" height="10" rx="2.2"/>'
+              '<path d="M7.8 11V8a4.2 4.2 0 0 1 7.9-2"/></g>',
     "check_all": '<path d="M4 12.5l5 5L20 6.5"/>',
     "clear": '<path d="M6 6l12 12M18 6L6 18"/>',
     # notes / files
@@ -98,7 +100,7 @@ def icon(name: str, variant: str = "neutral", checkable: bool = False) -> QIcon:
         return _cache[key]
     normal, disabled = _colors(variant)
     ic = QIcon()
-    for px in (16, 32, 48):
+    for px in (16, 20, 24, 32, 48):
         ic.addPixmap(_render(name, normal, px), QIcon.Normal, QIcon.Off)
         ic.addPixmap(_render(name, disabled, px), QIcon.Disabled, QIcon.Off)
         if checkable:
