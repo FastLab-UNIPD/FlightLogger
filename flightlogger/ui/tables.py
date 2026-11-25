@@ -1,9 +1,9 @@
 """Logged messages and parameters tables (Flight Review shows both below the graphs)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..log.ulog_loader import FlightLog
@@ -71,6 +71,10 @@ class ParamsTable(QWidget):
         self.changed_only.toggled.connect(self._apply_filter)
         self.table = _table(["Name", "Value", "Default"])
         self.table.setSortingEnabled(True)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        self.table.installEventFilter(self)
+        self._defaults: dict | None = None
         row = QHBoxLayout()
         row.addWidget(self.filter, 1)
         row.addWidget(self.changed_only)
@@ -83,6 +87,7 @@ class ParamsTable(QWidget):
         self.table.setSortingEnabled(False)
         params = log.params if log else {}
         defaults = log.default_params() if log else None
+        self._defaults = defaults
         self.changed_only.setEnabled(defaults is not None)
         self.changed_only.setToolTip("" if defaults is not None
                                      else "This log does not contain default values")
@@ -94,6 +99,8 @@ class ParamsTable(QWidget):
             cells = [QTableWidgetItem(name), QTableWidgetItem(_fmt(value)),
                      QTableWidgetItem("" if default is None else _fmt(default))]
             cells[0].setData(Qt.UserRole, changed)
+            cells[1].setData(Qt.UserRole + 1, value)      # raw values for parameter help
+            cells[2].setData(Qt.UserRole + 1, default)
             for c, it in enumerate(cells):
                 if changed:
                     it.setForeground(QBrush(RED))
@@ -102,6 +109,40 @@ class ParamsTable(QWidget):
         self.table.sortByColumn(0, Qt.AscendingOrder)
         self.table.resizeColumnsToContents()
         self._apply_filter()
+
+    # --- parameter help (H), copy ---
+    def eventFilter(self, obj, ev):
+        if (obj is self.table and ev.type() == QEvent.KeyPress and ev.key() == Qt.Key_H
+                and not ev.modifiers() and not ev.isAutoRepeat()):
+            self.show_help()
+            return True
+        return super().eventFilter(obj, ev)
+
+    def _current(self, row: int | None = None):
+        r = self.table.currentRow() if row is None else row
+        if r < 0 or self.table.item(r, 0) is None:
+            return None
+        it = self.table.item
+        return (it(r, 0).text(), it(r, 1).data(Qt.UserRole + 1), it(r, 2).data(Qt.UserRole + 1),
+                it(r, 1).text())
+
+    def show_help(self, row: int | None = None):
+        cur = self._current(row)
+        if cur:
+            from .param_help import ParamHelpPopup
+            ParamHelpPopup.show_for(cur[0], cur[1], cur[2], self.window())
+
+    def _context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        cur = self._current(row)
+        if not cur:
+            return
+        self.table.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction("Parameter help (H)", lambda: self.show_help(row))
+        menu.addAction("Copy name", lambda: QGuiApplication.clipboard().setText(cur[0]))
+        menu.addAction("Copy value", lambda: QGuiApplication.clipboard().setText(cur[3]))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _apply_filter(self, *_):
         words = self.filter.text().upper().split()

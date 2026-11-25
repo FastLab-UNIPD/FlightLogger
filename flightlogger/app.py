@@ -730,7 +730,12 @@ class MainWindow(QMainWindow):
         self._fill_window_menu()
 
         help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction("&Update parameter definitions…", self.update_param_definitions)
         help_menu.addAction("&About FlightLogger", self.show_about)
+
+    def update_param_definitions(self):
+        from .ui.param_help import update_definitions
+        self._param_update = update_definitions(self, self.interactive)
 
     def show_about(self):
         from . import __version__
