@@ -16,6 +16,8 @@ import base64
 import json
 import os
 import re
+import shutil
+import zipfile
 from pathlib import Path
 
 PROJECT_EXT = ".flproj"
@@ -50,6 +52,23 @@ def unb64(text: str | None) -> bytes:
 
 
 # --- project ------------------------------------------------------------------------
+def find_moved(path: str | Path | None, project_dir: str | Path) -> Path | None:
+    """A file of the same name in the project's folder or its immediate subfolders."""
+    if not path:
+        return None
+    name = Path(path).name
+    base = Path(project_dir)
+    try:
+        if (base / name).is_file():
+            return (base / name).resolve()
+        for sub in sorted(p for p in base.iterdir() if p.is_dir()):
+            if (sub / name).is_file():
+                return (sub / name).resolve()
+    except OSError:
+        pass
+    return None
+
+
 def save_project(path: str | Path, data: dict):
     """data uses absolute paths under data['log']['path'] / data['video']['path']."""
     path = Path(path)
@@ -65,6 +84,86 @@ def save_project(path: str | Path, data: dict):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
     tmp.replace(path)  # never leave a half-written project
+
+
+class ExportCancelled(Exception):
+    pass
+
+
+def _copy_file(src: Path, dst: Path, done: list, total: int, progress, cancel, chunk=8 << 20):
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while True:
+            if cancel():
+                raise ExportCancelled()
+            buf = fi.read(chunk)
+            if not buf:
+                break
+            fo.write(buf)
+            done[0] += len(buf)
+            if progress:
+                progress(done[0], total)
+    shutil.copystat(src, dst, follow_symlinks=True)
+
+
+def export_shareable(data: dict, dest_dir: str | Path, name: str, include_log: bool = True,
+                     include_video: bool = True, make_zip: bool = False, progress=None,
+                     cancel=lambda: False) -> Path:
+    """Write <dest_dir>/<name>/ with copies of the log/video and <name>.flproj pointing to them.
+
+    data is project_data() (absolute paths). progress(done_bytes, total_bytes) is called while
+    copying (and zipping: the total then covers both). Returns the folder (the zip is
+    <folder>.zip). On cancel or error, only what this call created is removed.
+    A file that is not included keeps its original absolute path in the project."""
+    dest_dir = Path(dest_dir)
+    folder = dest_dir / name
+    zip_path = folder.with_name(name + ".zip")
+    out = json.loads(json.dumps(data))
+    todo = []   # (key, src)
+    for key, include in (("log", include_log), ("video", include_video)):
+        src = (out.get(key) or {}).get("path")
+        if include and src and Path(src).is_file():
+            todo.append((key, Path(src)))
+    total = sum(s.stat().st_size for _, s in todo) * (2 if make_zip else 1)
+    done = [0]
+    created_folder = not folder.exists()
+    created_files: list[Path] = []
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        for key, src in todo:
+            dst = folder / src.name
+            created_files.append(dst)
+            _copy_file(src, dst, done, total, progress, cancel)
+            out[key]["path"] = str(dst)
+        proj = folder / (name + PROJECT_EXT)
+        created_files.append(proj)
+        save_project(proj, out)
+        if make_zip:
+            created_files.append(zip_path)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
+                for f in [f for f in created_files if f != zip_path]:
+                    with open(f, "rb") as fi, z.open(f"{name}/{f.name}", "w", force_zip64=True) as zo:
+                        while True:
+                            if cancel():
+                                raise ExportCancelled()
+                            buf = fi.read(8 << 20)
+                            if not buf:
+                                break
+                            zo.write(buf)
+                            done[0] += len(buf)
+                            if progress:
+                                progress(done[0], total)
+        if progress:
+            progress(total, total)
+    except BaseException:
+        for f in created_files:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        if created_folder:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return folder
 
 
 def load_project(path: str | Path) -> dict:

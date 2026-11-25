@@ -16,8 +16,9 @@ from .notes.export import EXTENSIONS, FILE_FILTERS, render
 from .notes.export_dialog import ExportNotesDialog
 from .notes.model import NotesModel
 from .notes.panel import NotesPanel
-from .project import (PROJECT_EXT, LayoutStore, PresetStore, LastDirs, RecentProjects, Settings, b64, load_project,
-                      save_project, unb64)
+from .project import (PROJECT_EXT, LayoutStore, PresetStore, LastDirs, RecentProjects, Settings, b64, export_shareable, ExportCancelled,
+                      find_moved, load_project, save_project, unb64)
+from .share_dialog import ShareDialog, run_with_progress
 from .playback import SPEED_PRESETS, Playback
 from .sync import Sync
 from .plots.common import MESSAGE_FILTERS, filter_messages, fmt_time
@@ -231,6 +232,8 @@ class MainWindow(QMainWindow):
         self._pending_source_url: str | None = None
         self._download: _DownloadThread | None = None
         self.interactive = True      # False in tests: no dialogs
+        self._busy = False   # a save/export is running (its event loop must not be re-entered)
+        self._relinked: list[str] = []   # files found elsewhere when opening a project
         self._dirty = False
         self._after_load = None      # callback once the log finished loading
 
@@ -757,6 +760,7 @@ class MainWindow(QMainWindow):
                             triggered=lambda: self.save_project()))
         m.addAction(QAction("Save project &as…", self, shortcut="Ctrl+Shift+S",
                             triggered=lambda: self.save_project(ask=True)))
+        m.addAction(QAction("Export &shareable project…", self, triggered=self.export_shareable_dialog))
         m.addAction(QAction("&Export notes as text…", self, triggered=self.export_notes_dialog))
         m.addSeparator()
         m.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
@@ -880,6 +884,9 @@ class MainWindow(QMainWindow):
         self.video_dw.raise_()
 
     def closeEvent(self, ev):
+        if self._busy:   # a save or export is running
+            ev.ignore()
+            return
         if not self._maybe_save():
             ev.ignore()
             return
@@ -1179,12 +1186,21 @@ class MainWindow(QMainWindow):
             if not path.endswith(PROJECT_EXT):
                 path += PROJECT_EXT
         path = Path(path or self.project_path)
+        if self._busy:
+            self.statusBar().showMessage("Still saving…", 3000)
+            return False
+        self._busy = True
         try:
-            save_project(path, self.project_data())
+            data = self.project_data()   # reads widgets: GUI thread
+            run_with_progress(self, f"Saving {path.name}…",
+                              lambda _p, _c: save_project(path, data),
+                              interactive=self.interactive)
         except OSError as e:
             if self.interactive:
                 QMessageBox.critical(self, "Save project", f"Could not save {path}: {e}")
             return False
+        finally:
+            self._busy = False
         self.project_path = path
         self.recent.add(path)
         self._set_dirty(False)
@@ -1211,22 +1227,74 @@ class MainWindow(QMainWindow):
             self.recent_menu.addAction(Path(p).name, lambda p=p: self.open_project(p))
 
     def _locate(self, path: str | None, what: str, file_filter: str) -> str | None:
-        """The project's file, or one the user picks if it moved."""
+        """The project's file; if it moved, one found next to the project file or picked by the user."""
         if not path:
             return None
         if Path(path).exists():
             return path
+        moved = find_moved(path, self.project_path.parent) if self.project_path else None
+        if moved:
+            self._relinked.append(f"{what.capitalize()} relinked to {moved}")
+            return str(moved)
         if not self.interactive:
             return None
-        r = QMessageBox.question(self, "File not found",
-                                 f"The project's {what} was not found:\n{path}\n\nLocate it?")
-        if r != QMessageBox.Yes:
+        box = QMessageBox(QMessageBox.Warning, "File not found",
+                          f"{what.capitalize()} not found: {path}", parent=self)
+        locate = box.addButton("Locate…", QMessageBox.AcceptRole)
+        box.addButton("Skip", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not locate:
             return None
         found, _ = QFileDialog.getOpenFileName(
             self, f"Locate {what}", self.last_dirs.get("locate", Path(path).parent), file_filter)
         if found:
             self.last_dirs.remember("locate", found)
+            self._relinked.append(f"{what.capitalize()} relinked to {found}")
         return found or None
+
+    def export_shareable_dialog(self):
+        if self._busy:
+            return
+        data = self.project_data()
+        log = (data.get("log") or {}).get("path")
+        video = (data.get("video") or {}).get("path")
+        if not (log or video):
+            if self.interactive:
+                QMessageBox.information(self, "Export shareable project", "Open a log first.")
+            return
+        has_video = bool(video and Path(video).is_file())
+        mb = Path(video).stat().st_size / 1e6 if has_video else None
+        stem = (self.project_path.stem if self.project_path else Path(log or video).stem)
+        dlg = ShareDialog(self, self.last_dirs.get("share_export", Path.home()), stem,
+                          bool(log and Path(log).is_file()), mb)
+        if not self.interactive or dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        self.last_dirs.remember("share_export", v["dest"])
+        folder = Path(v["dest"]) / v["name"]
+        if folder.exists() and any(folder.iterdir()):
+            if QMessageBox.question(
+                    self, "Export shareable project",
+                    f"{folder} already exists and is not empty. Files with the same names will be "
+                    "overwritten.\n\nContinue?") != QMessageBox.Yes:
+                return
+        self._busy = True
+        try:
+            run_with_progress(
+                self, "Copying project files…",
+                lambda prog, cancel: export_shareable(
+                    data, v["dest"], v["name"], v["include_log"], v["include_video"], v["make_zip"],
+                    progress=prog, cancel=cancel),
+                cancelable=True)
+        except ExportCancelled:
+            self.statusBar().showMessage("Export cancelled", 5000)
+            return
+        except OSError as e:
+            QMessageBox.critical(self, "Export shareable project", f"Export failed: {e}")
+            return
+        finally:
+            self._busy = False
+        self.statusBar().showMessage(f"Exported to {folder}", 8000)
 
     def open_project(self, path: str | Path) -> bool:
         if not self._maybe_save():
@@ -1239,6 +1307,7 @@ class MainWindow(QMainWindow):
             return False
         self.clock.pause()
         self.project_path = Path(path)
+        self._relinked = []
         self.notes.load_list(data.get("notes", []))
         self.apply_layout(data.get("layout", {}))
         self.clock.set_sync(Sync.from_dict(data.get("sync") or {}))
@@ -1266,8 +1335,10 @@ class MainWindow(QMainWindow):
                 self.open_video(video_path)
             self.recent.add(self.project_path)
             self.undo_mgr.reset()
-            self._set_dirty(False)
+            self._set_dirty(bool(self._relinked))   # a relinked path should be saved
             self._update_title()
+            if self._relinked:
+                self.statusBar().showMessage("; ".join(self._relinked), 10000)
 
         if log_path:
             self._after_load = finish
