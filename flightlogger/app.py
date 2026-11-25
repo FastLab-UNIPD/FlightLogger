@@ -1361,7 +1361,13 @@ class MainWindow(QMainWindow):
         v = dlg.values()
         self.last_dirs.remember("share_export", v["dest"])
         folder = Path(v["dest"]) / v["name"]
-        if folder.exists() and any(folder.iterdir()):
+        if v["make_zip"]:
+            zp = folder.with_name(v["name"] + ".zip")
+            if zp.exists() and QMessageBox.question(
+                    self, "Export shareable project",
+                    f"{zp} already exists and will be overwritten.\n\nContinue?") != QMessageBox.Yes:
+                return
+        elif folder.exists() and any(folder.iterdir()):
             if QMessageBox.question(
                     self, "Export shareable project",
                     f"{folder} already exists and is not empty. Files with the same names will be "
@@ -1369,7 +1375,7 @@ class MainWindow(QMainWindow):
                 return
         self._busy = True
         try:
-            run_with_progress(
+            result = run_with_progress(
                 self, "Copying project files…",
                 lambda prog, cancel: export_shareable(
                     data, v["dest"], v["name"], v["include_log"], v["include_video"], v["make_zip"],
@@ -1383,7 +1389,7 @@ class MainWindow(QMainWindow):
             return
         finally:
             self._busy = False
-        self.statusBar().showMessage(f"Exported to {folder}", 8000)
+        self.statusBar().showMessage(f"Exported to {result or folder}", 8000)
 
     def open_project(self, path: str | Path) -> bool:
         if not self._maybe_save():

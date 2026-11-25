@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QToolButton
 
 from ..log.ulog_loader import FlightLog
@@ -67,15 +67,28 @@ class TimelineWidget(pg.PlotWidget):
         self.lock_btn.setCheckable(True)
         self.lock_btn.setChecked(True)
         self.lock_btn.setAutoRaise(True)
-        self.lock_btn.setFixedSize(22, 22)
+        self.lock_btn.setFixedSize(26, 26)
+        self.lock_btn.setIconSize(QSize(19, 19))
         self.lock_btn.setCursor(Qt.ArrowCursor)
         self.lock_btn.setToolTip("Lock: timeline shows the whole flight / "
                                  "Unlocked: wheel to zoom, drag to pan")
         self.lock_btn.setIcon(icons.icon("lock"))
+        self.style_lock_btn()
         self.lock_btn.toggled.connect(self.set_locked)
         self._place_lock_btn()
 
     # --- lock / unlock (zoom and pan) ---
+    def style_lock_btn(self):
+        """Semi-opaque backing so the icon reads over plot content (call again after a theme switch)."""
+        from ..ui import theme
+        dark = theme.is_dark()
+        bg, hov, edge = (("rgba(30,30,30,200)", "rgba(70,70,70,230)", "rgba(200,188,242,150)") if dark else
+                         ("rgba(255,255,255,215)", "rgba(235,232,248,240)", "rgba(80,60,160,150)"))
+        self.lock_btn.setStyleSheet(
+            f"QToolButton{{background:{bg};border:1px solid {edge};border-radius:5px;padding:0;}}"
+            f"QToolButton:hover{{background:{hov};}}")
+        self.lock_btn.setIcon(icons.icon("lock" if self.locked else "unlock"))
+
     def _place_lock_btn(self):
         self.lock_btn.move(max(0, self.width() - self.lock_btn.width() - 4), 3)
         self.lock_btn.raise_()
@@ -97,7 +110,7 @@ class TimelineWidget(pg.PlotWidget):
             return
         changed = on != self.locked
         self.locked = on
-        self.lock_btn.setIcon(icons.icon("lock" if on else "unlock"))
+        self.style_lock_btn()
         self.vb.setMouseEnabled(x=not on, y=False)
         dur = max(self.bus.duration, 1e-3)
         if on:

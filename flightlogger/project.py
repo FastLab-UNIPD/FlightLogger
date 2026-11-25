@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -108,23 +109,60 @@ def _copy_file(src: Path, dst: Path, done: list, total: int, progress, cancel, c
 def export_shareable(data: dict, dest_dir: str | Path, name: str, include_log: bool = True,
                      include_video: bool = True, make_zip: bool = False, progress=None,
                      cancel=lambda: False) -> Path:
-    """Write <dest_dir>/<name>/ with copies of the log/video and <name>.flproj pointing to them.
+    """Export the project with copies of the log/video and <name>.flproj pointing to them.
+
+    make_zip False: writes the folder <dest_dir>/<name>/ and returns it.
+    make_zip True: writes ONLY <dest_dir>/<name>.zip (containing <name>/<name>.flproj, log, video)
+    and returns the zip path; no folder is created, so an existing <dest_dir>/<name> is never touched.
 
     data is project_data() (absolute paths). progress(done_bytes, total_bytes) is called while
-    copying (and zipping: the total then covers both). Returns the folder (the zip is
-    <folder>.zip). On cancel or error, only what this call created is removed.
-    A file that is not included keeps its original absolute path in the project."""
+    copying/streaming and finally with (total, total). On cancel or error, only what this call
+    created is removed. A file that is not included keeps its original absolute path."""
     dest_dir = Path(dest_dir)
     folder = dest_dir / name
-    zip_path = folder.with_name(name + ".zip")
+    zip_path = dest_dir / (name + ".zip")
     out = json.loads(json.dumps(data))
     todo = []   # (key, src)
     for key, include in (("log", include_log), ("video", include_video)):
         src = (out.get(key) or {}).get("path")
         if include and src and Path(src).is_file():
             todo.append((key, Path(src)))
-    total = sum(s.stat().st_size for _, s in todo) * (2 if make_zip else 1)
+    total = sum(s.stat().st_size for _, s in todo)
     done = [0]
+    if make_zip:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                for key, src in todo:
+                    out[key]["path"] = str(Path(tmp) / src.name)   # becomes relative in the project
+                proj_tmp = Path(tmp) / (name + PROJECT_EXT)
+                save_project(proj_tmp, out)
+                pdata = json.loads(proj_tmp.read_text(encoding="utf-8"))
+                for key, _ in todo:
+                    pdata[key].pop("abs_path", None)   # temp path: meaningless on another PC
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
+                    z.writestr(f"{name}/{name}{PROJECT_EXT}", json.dumps(pdata, indent=2))
+                    for key, src in todo:
+                        with open(src, "rb") as fi, z.open(f"{name}/{src.name}", "w", force_zip64=True) as zo:
+                            while True:
+                                if cancel():
+                                    raise ExportCancelled()
+                                buf = fi.read(8 << 20)
+                                if not buf:
+                                    break
+                                zo.write(buf)
+                                done[0] += len(buf)
+                                if progress:
+                                    progress(done[0], total)
+            if progress:
+                progress(total, total)
+        except BaseException:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            raise
+        return zip_path
     created_folder = not folder.exists()
     created_files: list[Path] = []
     try:
@@ -137,21 +175,6 @@ def export_shareable(data: dict, dest_dir: str | Path, name: str, include_log: b
         proj = folder / (name + PROJECT_EXT)
         created_files.append(proj)
         save_project(proj, out)
-        if make_zip:
-            created_files.append(zip_path)
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
-                for f in [f for f in created_files if f != zip_path]:
-                    with open(f, "rb") as fi, z.open(f"{name}/{f.name}", "w", force_zip64=True) as zo:
-                        while True:
-                            if cancel():
-                                raise ExportCancelled()
-                            buf = fi.read(8 << 20)
-                            if not buf:
-                                break
-                            zo.write(buf)
-                            done[0] += len(buf)
-                            if progress:
-                                progress(done[0], total)
         if progress:
             progress(total, total)
     except BaseException:
