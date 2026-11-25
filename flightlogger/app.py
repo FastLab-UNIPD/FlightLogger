@@ -220,6 +220,7 @@ class MainWindow(QMainWindow):
         self.notes = NotesModel(self)
         self.hidden_sets: set[str] = set()      # note sets hidden everywhere ("" = no set)
         self.plot_note_markers = True
+        self._applying_view = False   # True while a layout's view state is applied
         self.layouts = LayoutStore()
         self.presets = PresetStore()
         self.recent = RecentProjects()
@@ -808,6 +809,9 @@ class MainWindow(QMainWindow):
             self.timeline.layer_visible[layer] = bool(self.settings.get(f"timeline_{layer}", True))
         self.timeline_msgs_act.toggled.connect(self._on_timeline_msgs_toggled)
         v.addAction(self.timeline_msgs_act)
+        self.plot_markers_act.toggled.connect(lambda _on: self._view_dirty())
+        self.timeline.lockChanged.connect(self._on_timeline_lock)
+        self.timeline.set_locked(bool(self.settings.get("timeline_locked", True)))
         theme_menu = v.addMenu("&Theme")
         tgroup = QActionGroup(theme_menu)
         current = self.settings.get("theme", "dark")
@@ -1082,11 +1086,55 @@ class MainWindow(QMainWindow):
         return True
 
     # --- layouts ---
+    def capture_view(self) -> dict:
+        """Display toggles that belong to a layout/project (all optional when loading)."""
+        return {"timeline_layers": {k: bool(v) for k, v in self.timeline.layer_visible.items()},
+                "timeline_messages": self.timeline_msgs_act.isChecked(),
+                "message_mode": self.message_mode,
+                "plot_note_markers": bool(self.plot_note_markers),
+                "timeline_locked": bool(self.timeline.locked)}
+
+    def apply_view(self, view: dict):
+        """Apply a captured view dict; missing keys leave the current state alone. Global
+        defaults (settings.json) are not touched."""
+        self._applying_view = True
+        try:
+            for layer, on in (view.get("timeline_layers") or {}).items():
+                if layer in self.timeline.layer_visible:
+                    self.timeline.set_layer_visible(layer, bool(on))
+            if "timeline_messages" in view:
+                self.timeline_msgs_act.blockSignals(True)
+                self.timeline_msgs_act.setChecked(bool(view["timeline_messages"]))
+                self.timeline_msgs_act.blockSignals(False)
+            if view.get("message_mode") in MESSAGE_FILTERS:
+                self.set_message_mode(view["message_mode"], persist=False)
+            else:
+                self._apply_messages()
+            if "plot_note_markers" in view:
+                self.plot_markers_act.blockSignals(True)
+                self.plot_markers_act.setChecked(bool(view["plot_note_markers"]))
+                self.plot_markers_act.blockSignals(False)
+                self.set_plot_note_markers(bool(view["plot_note_markers"]))
+            if "timeline_locked" in view:
+                self.timeline.set_locked(bool(view["timeline_locked"]))
+        finally:
+            self._applying_view = False
+
+    def _view_dirty(self):
+        if not self._applying_view and self.project_path is not None:
+            self._set_dirty(True)
+
+    def _on_timeline_lock(self, locked: bool):
+        if not self._applying_view:
+            self.settings.set("timeline_locked", bool(locked))
+        self._view_dirty()
+
     def capture_layout(self) -> dict:
-        """Panels and their graphs + dock arrangement + window geometry."""
+        """Panels and their graphs + dock arrangement + window geometry + view toggles."""
         return {"panels": [p.to_dict() for p, _ in self.panels.values()],
                 "dock_state": b64(self.docks.mgr.saveState()),
-                "geometry": b64(self.saveGeometry())}
+                "geometry": b64(self.saveGeometry()),
+                "view": self.capture_view()}
 
     def apply_layout(self, layout: dict):
         # replace the graph panels
@@ -1113,6 +1161,8 @@ class MainWindow(QMainWindow):
         self.active_panel = next(iter(self.panels.values()))[0]
         self._fill_empty_panels()
         self.graph_list.sync(self.active_panel)
+        if isinstance(layout.get("view"), dict):
+            self.apply_view(layout["view"])
 
     def _rescue_offscreen_windows(self):
         """Floating windows saved on a monitor that is not connected now come
@@ -1434,6 +1484,7 @@ class MainWindow(QMainWindow):
     def _on_timeline_layer(self, layer: str, on: bool):
         self.settings.set(f"timeline_{layer}", bool(on))
         self.timeline.set_layer_visible(layer, on)
+        self._view_dirty()
 
     def _set_theme(self, mode: str):
         """Save the theme and restart the app (after the usual unsaved-changes prompt)."""
@@ -1461,6 +1512,7 @@ class MainWindow(QMainWindow):
     def _on_timeline_msgs_toggled(self, on: bool):
         self.settings.set("timeline_messages", bool(on))
         self._apply_messages()
+        self._view_dirty()
 
     def export_notes_dialog(self):
         if not self.interactive:
@@ -1506,11 +1558,15 @@ class MainWindow(QMainWindow):
                               encoding="utf-8", newline="")
         self.statusBar().showMessage(f"Exported {len(notes)} notes to {path}", 5000)
 
-    def set_message_mode(self, mode: str):
+    def set_message_mode(self, mode: str, persist: bool = True):
         if mode not in MESSAGE_FILTERS:
             return
+        changed = mode != self.message_mode
         self.message_mode = mode
-        self.settings.set("message_markers", mode)
+        if persist:
+            self.settings.set("message_markers", mode)
         if mode in getattr(self, "_message_actions", {}):
             self._message_actions[mode].setChecked(True)
         self._apply_messages()
+        if changed:
+            self._view_dirty()
