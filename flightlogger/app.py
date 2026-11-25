@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         self._pending_source_url: str | None = None
         self._download: _DownloadThread | None = None
         self.interactive = True      # False in tests: no dialogs
+        self._busy = False   # a save/export is running (its event loop must not be re-entered)
         self._relinked: list[str] = []   # files found elsewhere when opening a project
         self._dirty = False
         self._after_load = None      # callback once the log finished loading
@@ -881,6 +882,9 @@ class MainWindow(QMainWindow):
         self.video_dw.raise_()
 
     def closeEvent(self, ev):
+        if self._busy:   # a save or export is running
+            ev.ignore()
+            return
         if not self._maybe_save():
             ev.ignore()
             return
@@ -1179,6 +1183,10 @@ class MainWindow(QMainWindow):
             if not path.endswith(PROJECT_EXT):
                 path += PROJECT_EXT
         path = Path(path or self.project_path)
+        if self._busy:
+            self.statusBar().showMessage("Still saving…", 3000)
+            return False
+        self._busy = True
         try:
             data = self.project_data()   # reads widgets: GUI thread
             run_with_progress(self, f"Saving {path.name}…",
@@ -1188,6 +1196,8 @@ class MainWindow(QMainWindow):
             if self.interactive:
                 QMessageBox.critical(self, "Save project", f"Could not save {path}: {e}")
             return False
+        finally:
+            self._busy = False
         self.project_path = path
         self.recent.add(path)
         self._set_dirty(False)
@@ -1240,6 +1250,8 @@ class MainWindow(QMainWindow):
         return found or None
 
     def export_shareable_dialog(self):
+        if self._busy:
+            return
         data = self.project_data()
         log = (data.get("log") or {}).get("path")
         video = (data.get("video") or {}).get("path")
@@ -1263,6 +1275,7 @@ class MainWindow(QMainWindow):
                     f"{folder} already exists and is not empty. Files with the same names will be "
                     "overwritten.\n\nContinue?") != QMessageBox.Yes:
                 return
+        self._busy = True
         try:
             run_with_progress(
                 self, "Copying project files…",
@@ -1276,6 +1289,8 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.critical(self, "Export shareable project", f"Export failed: {e}")
             return
+        finally:
+            self._busy = False
         self.statusBar().showMessage(f"Exported to {folder}", 8000)
 
     def open_project(self, path: str | Path) -> bool:
