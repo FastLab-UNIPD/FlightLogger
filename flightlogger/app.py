@@ -818,6 +818,7 @@ class MainWindow(QMainWindow):
         self._make_shortcuts_global()
 
         help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction("&Update parameter definitions…", self.update_param_definitions)
         help_menu.addAction("&About FlightLogger", self.show_about)
 
     def _make_shortcuts_global(self):
@@ -827,6 +828,10 @@ class MainWindow(QMainWindow):
         for a in self.findChildren(QAction):
             if not a.shortcut().isEmpty():
                 a.setShortcutContext(Qt.ApplicationShortcut)
+
+    def update_param_definitions(self):
+        from .ui.param_help import update_definitions
+        self._param_update = update_definitions(self, self.interactive)
 
     def show_about(self):
         from . import IS_DEV, __version__

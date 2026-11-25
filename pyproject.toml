@@ -31,4 +31,4 @@ version = {attr = "flightlogger.__version__"}
 include = ["flightlogger*"]
 
 [tool.setuptools.package-data]
-flightlogger = ["resources/*.svg", "log/*.md"]
+flightlogger = ["resources/*.svg", "resources/*.json.gz","log/*.md"]
