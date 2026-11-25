@@ -160,9 +160,11 @@ into a span. **General** adds an untimed note about the whole flight. Notes show
 as colored markers on every graph and the timeline (hover for a preview; switch
 it off in **View → Note previews on hover**); click one in the list to jump there.
 **Export** (or File → Export notes as text) writes all notes with their timestamps
-to a text file. In the **Video** panel, the *Notes* / *Messages* buttons under the
+to a text file. On the timeline, note titles are staggered into rows so close notes stay readable.
+In the **Video** panel, the *Notes* / *Messages* buttons under the
 progress bar draw them over the picture: an instant note appears shortly before its time
-and stays a few seconds after; a span stays for its whole length. **Timing ▾** sets how
+and stays a few seconds after; a span stays for its whole length. Each box keeps its place while it is shown, and a new one takes the first
+free space. **Timing ▾** sets how
 long notes appear before and stay after (default 1.5 s and 4 s) and **Size ▾** sets the
 overlay size (relative to the video, not fixed pixels); both are remembered.
 
@@ -183,6 +185,8 @@ monitor that is no longer connected come back to the main screen. Layouts are
 stored in `~/.config/flightlogger/layouts`.
 
 ## Keys
+
+The shortcuts work from every FlightLogger window, also from floating panels and while typing a note.
 
 | Key | Action |
 | --- | --- |

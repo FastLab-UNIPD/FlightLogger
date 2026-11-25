@@ -335,8 +335,11 @@ class MainWindow(QMainWindow):
 
     def _build_panel_menu(self, menu: QMenu) -> QMenu:
         menu.setIcon(icons.icon("graph"))
-        menu.addAction(QAction(icons.icon("graph"), "Empty panel", self, shortcut="Ctrl+G",
-                               triggered=lambda: self.new_panel()))
+        # one shared action for every copy of this menu: two with Ctrl+G would be ambiguous
+        if getattr(self, "_new_panel_act", None) is None:
+            self._new_panel_act = QAction(icons.icon("graph"), "Empty panel", self, shortcut="Ctrl+G",
+                                          triggered=lambda: self.new_panel())
+        menu.addAction(self._new_panel_act)
         menu.addSeparator()
         for name in GRAPH_PRESETS:
             menu.addAction(name, lambda name=name: self.new_preset_panel(name))
@@ -722,9 +725,18 @@ class MainWindow(QMainWindow):
         self.window_menu = self.menuBar().addMenu("&Window")
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
         self._fill_window_menu()
+        self._make_shortcuts_global()
 
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction("&About FlightLogger", self.show_about)
+
+    def _make_shortcuts_global(self):
+        """Ctrl+S & co. must work from every FlightLogger window: panels floating on their own
+        (e.g. Notes, while typing in it) are separate windows, which a window shortcut misses.
+        Open modal dialogs still block them."""
+        for a in self.findChildren(QAction):
+            if not a.shortcut().isEmpty():
+                a.setShortcutContext(Qt.ApplicationShortcut)
 
     def show_about(self):
         from . import IS_DEV, __version__

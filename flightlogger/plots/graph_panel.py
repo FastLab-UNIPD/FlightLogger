@@ -105,6 +105,7 @@ class GraphPlot:
         self.curves: dict[str, pg.PlotDataItem] = {}
         self.mode_items: list = []
         self.note_items: list = []
+        self._note_map: dict = {}   # note id -> ((t, t_end, color), item)
         self.message_items: list = []
         self._n_legend = 0
         self.stale = True
@@ -217,25 +218,34 @@ class GraphPlot:
         self.legend.setVisible(self._n_legend > 0)
 
     def set_notes(self, notes):
-        """Timeline notes: dashed line (instant) or shaded band (span)."""
-        for it in self.note_items:
-            self.item.removeItem(it)
-        self.note_items = []
+        """Timeline notes: dashed line (instant) or shaded band (span).
+
+        Only markers whose time or color changed are redrawn: rebuilding every marker on every
+        plot at each keystroke in a note made typing lag by about a second."""
         if not self.time_based:
             return
-        for n in (n for n in notes if not n.general):   # general notes have no time
-            color = pg.mkColor(n.color)
-            if n.t_end is None:
-                it = pg.InfiniteLine(n.t, angle=90, movable=False,
+        wanted = {n.id: (n.t, n.t_end, n.color) for n in notes if not n.general}   # general: no time
+        for nid, (sig, item) in list(self._note_map.items()):
+            if wanted.get(nid) != sig:
+                self.item.removeItem(item)
+                del self._note_map[nid]
+        for nid, sig in wanted.items():
+            if nid in self._note_map:
+                continue
+            t, t_end, name = sig
+            color = pg.mkColor(name)
+            if t_end is None:
+                it = pg.InfiniteLine(t, angle=90, movable=False,
                                      pen=pg.mkPen(color, width=1.5, style=Qt.DashLine))
             else:
-                fill = pg.mkColor(n.color)
+                fill = pg.mkColor(name)
                 fill.setAlpha(45)
-                it = pg.LinearRegionItem((n.t, n.t_end), movable=False, brush=fill,
+                it = pg.LinearRegionItem((t, t_end), movable=False, brush=fill,
                                          pen=pg.mkPen(color, width=1))
             it.setZValue(-50)
             self.item.addItem(it, ignoreBounds=True)
-            self.note_items.append(it)
+            self._note_map[nid] = (sig, it)
+        self.note_items = [item for _, item in self._note_map.values()]
 
     def set_messages(self, messages):
         """PX4 logged messages (warnings/errors) as thin dotted lines."""

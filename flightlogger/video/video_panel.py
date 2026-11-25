@@ -459,7 +459,7 @@ class VideoPanel(QWidget):
             return
         from html import escape
         t = self.bus.t
-        rows: list[tuple[str, float]] = []   # (html, flash) per box
+        rows: list[tuple[str, float, object]] = []   # (html, flash, key) per box
 
         def pulse(dt: float) -> float:   # dt = now - event time
             if -self.FLASH_IN <= dt <= 0:
@@ -492,15 +492,15 @@ class VideoPanel(QWidget):
                     body = (" – " + "<br>".join(escape(l) for l in n.text.strip().splitlines())
                             if n.text.strip() else "")
                     rows.append((f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}',
-                                 flash))
+                                 flash, ("note", n.id)))
         if self.overlay_messages:
             colors = {"error": "#ff7b72", "warning": "#f0c04c"}
             for m in self.messages_source():
                 if t - self.MSG_HOLD <= m.t <= t + self.MSG_LEAD:
                     c = colors.get(m.level.lower(), "#cccccc")
                     rows.append((f'<span style="color:{c}">{escape(m.level)}</span> {escape(m.text)}',
-                                 pulse(t - m.t)))
-        self.video.set_overlay_items(rows[-6:])
+                                 pulse(t - m.t), ("message", m.t, m.text)))
+        self.video.set_overlay_items(rows)
 
     # --- markers on the progress bar ---
     def set_show_markers(self, on: bool):

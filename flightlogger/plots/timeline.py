@@ -41,12 +41,15 @@ class TimelineWidget(pg.PlotWidget):
         pi.addItem(self.cursor, ignoreBounds=True)
         self._static: list = []
         self._note_items: list = []
+        self._note_map: dict = {}   # note id -> mark, label, signature, title
         self._message_items: list = []
         self._updating = False
         self.layer_visible = {"modes": True, "events": True, "notes": True}
         self._layers: dict[str, list] = {"modes": [], "events": []}
 
         self.scene().sigMouseClicked.connect(self._on_click)
+        self.vb.sigResized.connect(self._stagger)
+        self.vb.sigXRangeChanged.connect(self._stagger)
         self.previews = True
         self._notes: list = []
         self._messages: list = []
@@ -122,37 +125,80 @@ class TimelineWidget(pg.PlotWidget):
         if self.previews:   # the only hover on the timeline: note / message previews
             show_preview_at(self._notes, self._messages, x, 6 * self.vb.viewPixelSize()[0], gp)
 
+    MAX_NOTE_ROWS = 6
+
     def set_notes(self, notes):
+        """Span bands / instant lines with a title label each. Items are updated in place (a
+        title edit only changes its label text) and labels are staggered into rows."""
         self._notes = list(notes)
         pi = self.getPlotItem()
-        for it in self._note_items:
-            pi.removeItem(it)
+        wanted = {n.id: n for n in notes if not n.general}   # general notes have no time
+        for nid, entry in list(self._note_map.items()):
+            n = wanted.get(nid)
+            if n is None or entry["sig"] != (n.t, n.t_end, n.color):
+                pi.removeItem(entry["mark"])
+                pi.removeItem(entry["label"])
+                del self._note_map[nid]
+        for nid, n in wanted.items():
+            entry = self._note_map.get(nid)
+            if entry is None:
+                color = pg.mkColor(n.color)
+                if n.t_end is None:
+                    mark = pg.InfiniteLine(n.t, angle=90, movable=False, pen=pg.mkPen(color, width=2))
+                else:
+                    fill = pg.mkColor(n.color)
+                    fill.setAlpha(70)
+                    mark = pg.LinearRegionItem((n.t, n.t_end), movable=False, brush=fill,
+                                               pen=pg.mkPen(color, width=1))
+                mark.setZValue(5)
+                pi.addItem(mark, ignoreBounds=True)
+                label = pg.TextItem("", color=color, anchor=(0, 0.5),
+                                    fill=(30, 30, 30, 200) if theme.is_dark() else (255, 255, 255, 190))
+                font = label.textItem.font()          # compact, so more rows fit the strip
+                font.setPointSizeF(8)
+                label.setFont(font)
+                label.textItem.document().setDocumentMargin(1)
+                label.setZValue(6)
+                pi.addItem(label, ignoreBounds=True)
+                entry = self._note_map[nid] = {"sig": (n.t, n.t_end, n.color), "mark": mark,
+                                               "label": label, "title": None}
+            if entry["title"] != n.title[:24]:
+                entry["title"] = n.title[:24]
+                entry["label"].setText(entry["title"])
         self._note_items = []
-        for n in (n for n in notes if not n.general):   # general notes have no time
-            color = pg.mkColor(n.color)
-            if n.t_end is None:
-                it = pg.InfiniteLine(n.t, angle=90, movable=False, pen=pg.mkPen(color, width=2),
-                                     label=n.title[:24], labelOpts={
-                                         "position": 0.55, "color": color,
-                                         "fill": (30, 30, 30, 200) if theme.is_dark()
-                                         else (255, 255, 255, 190)})
-            else:
-                fill = pg.mkColor(n.color)
-                fill.setAlpha(70)
-                it = pg.LinearRegionItem((n.t, n.t_end), movable=False, brush=fill,
-                                         pen=pg.mkPen(color, width=1))
-            it.setZValue(5)
-            pi.addItem(it, ignoreBounds=True)
-            self._note_items.append(it)
-            it.setVisible(self.layer_visible["notes"])
-            if n.t_end is not None and n.title:   # spans get the same label as instants
-                lbl = pg.TextItem(n.title[:24], color=color, anchor=(0, 0.5),
-                                  fill=(30, 30, 30, 200) if theme.is_dark() else (255, 255, 255, 190))
-                lbl.setPos(n.t, 0.55)
-                lbl.setZValue(6)
-                pi.addItem(lbl, ignoreBounds=True)
-                self._note_items.append(lbl)
-                lbl.setVisible(self.layer_visible["notes"])
+        for entry in self._note_map.values():
+            self._note_items += [entry["mark"], entry["label"]]
+        self._show_notes()
+        self._stagger()
+
+    def _show_notes(self):
+        on = self.layer_visible["notes"]
+        for entry in self._note_map.values():
+            entry["mark"].setVisible(on)
+            entry["label"].setVisible(on and bool(entry["title"]))   # no empty label boxes
+
+    def _stagger(self, *_):
+        """Give each note label a row (one label height apart) where it does not cover an earlier
+        label; the taller the timeline, the more rows."""
+        if not self._note_map:
+            return
+        px, py = self.vb.viewPixelSize()          # data units per pixel
+        if not (px and py and np.isfinite(px) and np.isfinite(py)):
+            return
+        entries = sorted(self._note_map.values(), key=lambda e: e["sig"][0])
+        label_h = max(e["label"].textItem.boundingRect().height() for e in entries) or 16
+        n = max(1, min(self.MAX_NOTE_ROWS, int(self.vb.height() / label_h)))
+        low, high = self.vb.viewRange()[1]
+        top = (low + high) / 2 + n * label_h * py / 2          # rows centered in the strip
+        rows = [top - (i + 0.5) * label_h * py for i in range(n)]
+        busy_until = [-np.inf] * n
+        for e in entries:
+            t = e["sig"][0]
+            end = t + (e["label"].textItem.boundingRect().width() + 3) * px
+            free = [i for i, u in enumerate(busy_until) if u <= t]
+            i = free[0] if free else int(np.argmin(busy_until))   # all taken: the one ending first
+            busy_until[i] = end
+            e["label"].setPos(t, rows[i])
 
     def _add(self, item, layer: str | None = None):
         self.getPlotItem().addItem(item, ignoreBounds=True)
@@ -164,8 +210,7 @@ class TimelineWidget(pg.PlotWidget):
     def set_layer_visible(self, layer: str, on: bool):
         self.layer_visible[layer] = on
         if layer == "notes":
-            for it in self._note_items:
-                it.setVisible(on)
+            self._show_notes()
         else:
             for it in self._layers.get(layer, []):
                 it.setVisible(on)

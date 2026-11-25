@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov", ".3gp", ".3g2", ".mkv", ".webm", ".avi", ".mts", ".m2ts")
 
@@ -96,10 +96,9 @@ class MpvWidget(QOpenGLWidget):
         self.overlay.setAttribute(Qt.WA_TranslucentBackground)
         self.overlay.setObjectName("videoOverlay")
         self.overlay.setStyleSheet("#videoOverlay { background: transparent; }")
-        self._ov_layout = QVBoxLayout(self.overlay)
-        self._ov_layout.setContentsMargins(0, 0, 0, 0)
-        self._ov_layout.setSpacing(4)
-        self._ov_boxes: list[QLabel] = []
+        self._ov_boxes: dict = {}     # item key -> box on screen (each keeps its place)
+        self._ov_spare: list[QLabel] = []
+        self._ov_geometry = None      # (width, font px) the boxes are placed for
         self._ov_scale = 1.0        # relative size, set by the overlay's Size menu
         self._ov_px = 0             # font size currently applied to the boxes
         self.overlay.hide()
@@ -138,12 +137,13 @@ class MpvWidget(QOpenGLWidget):
     def set_overlay_scale(self, scale: float):
         """Relative size of the overlay (1.0 = default); the Size menu changes it."""
         self._ov_scale = float(scale)
-        self._ov_px = 0
         if self.overlay.isVisible():
             self._place_overlay()
 
     def _ov_font_px(self) -> int:
         return max(8, round(self.height() * self.OV_FONT_FRAC * self._ov_scale))
+
+    OV_MAX_BOXES = 6
 
     def _new_box(self) -> QLabel:
         box = QLabel(self.overlay)
@@ -152,7 +152,7 @@ class MpvWidget(QOpenGLWidget):
         box.setAttribute(Qt.WA_TransparentForMouseEvents)
         box._flash_level = None
         box._px = 0
-        self._ov_layout.addWidget(box)
+        box._y = None          # top of the box inside the overlay; None = not placed yet
         return box
 
     def _style_box(self, box: QLabel, level: int):
@@ -165,20 +165,33 @@ class MpvWidget(QOpenGLWidget):
                           f"border-radius: {round(fp * 0.46)}px; "
                           f"padding: {round(fp * 0.46)}px {round(fp * 0.6)}px; font-size: {fp}px;")
 
-    def set_overlay_items(self, items: list[tuple[str, float]]):
-        """items: (html, flash 0..1) per box; flash gently brightens that box only."""
-        if not items:
+    def _drop_box(self, key):
+        box = self._ov_boxes.pop(key)
+        box.hide()
+        box._y = None
+        self._ov_spare.append(box)
+
+    def set_overlay_items(self, items: list):
+        """items: (html, flash 0..1[, key]) per box; flash gently brightens that box only.
+
+        A box keeps its place on screen for as long as its item (same key) is shown, so it can be
+        read in peace; a new item goes into the first free space from the top."""
+        keyed = {}
+        for item in items:
+            keyed[item[2] if len(item) > 2 else item[0]] = (item[0], item[1])
+        for key in [k for k in self._ov_boxes if k not in keyed]:
+            self._drop_box(key)
+        if not keyed:
             self.overlay.hide()
             return
         self._ov_px = self._ov_font_px()
-        self._ov_layout.setSpacing(max(2, round(self._ov_px * 0.3)))
-        while len(self._ov_boxes) < len(items):
-            self._ov_boxes.append(self._new_box())
-        for i, box in enumerate(self._ov_boxes):
-            if i >= len(items):
-                box.hide()
-                continue
-            html, flash = items[i]
+        for key, (html, flash) in keyed.items():
+            box = self._ov_boxes.get(key)
+            if box is None:
+                if len(self._ov_boxes) >= self.OV_MAX_BOXES:
+                    continue     # no free slot: shown once one of the others has gone
+                box = self._ov_boxes[key] = self._ov_spare.pop() if self._ov_spare else self._new_box()
+                box._flash_level = None
             level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
             if level != box._flash_level or self._ov_px != box._px:
                 self._style_box(box, level)
@@ -189,18 +202,38 @@ class MpvWidget(QOpenGLWidget):
         self._place_overlay()
 
     def _place_overlay(self):
-        if self._ov_px != self._ov_font_px():   # the video was resized: restyle the boxes
-            self._ov_px = self._ov_font_px()
-            self._ov_layout.setSpacing(max(2, round(self._ov_px * 0.3)))
-            for box in self._ov_boxes:
+        self._ov_px = self._ov_font_px()
+        boxes = list(self._ov_boxes.values())
+        for box in boxes:
+            if box._px != self._ov_px:          # the video was resized: restyle
                 self._style_box(box, box._flash_level or 0)
-        w = max(120, min(int(self.width() * 0.5), int(self.width() * self.OV_WIDTH_FRAC * max(self._ov_scale, 1.0))))
-        self.overlay.setFixedWidth(w)
-        lay = self._ov_layout
-        self.overlay.setFixedHeight(lay.heightForWidth(w) if lay.hasHeightForWidth()
-                                    else lay.sizeHint().height())
+        w = max(120, min(int(self.width() * 0.5),
+                         int(self.width() * self.OV_WIDTH_FRAC * max(self._ov_scale, 1.0))))
+        gap = max(2, round(self._ov_px * 0.3))
+        order = sorted((b for b in boxes if b._y is not None), key=lambda b: b._y)
+        order += [b for b in boxes if b._y is None]
+        if self._ov_geometry != (w, self._ov_px):   # new size: place again, keeping the order
+            self._ov_geometry = (w, self._ov_px)
+            for box in boxes:
+                box._y = None
+        for box in order:
+            box.ensurePolished()
+            h = box.heightForWidth(w)
+            box.resize(w, h if h > 0 else box.sizeHint().height())
+        placed: list = []
+        # boxes already on screen first (they stay put), then the new ones into free space
+        for box in sorted(order, key=lambda b: b._y is None):
+            y = box._y if box._y is not None else 0
+            for other in sorted(placed, key=lambda b: b._y):
+                if y < other._y + other.height() + gap and other._y < y + box.height() + gap:
+                    y = other._y + other.height() + gap   # taken (or grown into): next free spot
+            box._y = y
+            box.move(0, y)
+            placed.append(box)
+        height = max((b._y + b.height() for b in placed), default=0)
+        self.overlay.setFixedSize(w, height)
         margin = max(6, round(self._ov_px * 0.77))
-        self.overlay.move(self.width() - self.overlay.width() - margin, margin)
+        self.overlay.move(self.width() - w - margin, margin)
         self.overlay.raise_()
 
     def resizeEvent(self, ev):
