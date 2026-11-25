@@ -42,6 +42,8 @@ class TimeBus(QObject):
     def seek(self, t: float):
         """User-initiated jump (click on a plot, keyboard step, note...)."""
         t = self.clamp(t)
+        if self.trim:                      # a hidden time range: land on the nearest visible edge
+            t = min(max(t, self.trim[0]), self.trim[1])
         self.seekRequested.emit(t)
         self.set_time(t)
 
