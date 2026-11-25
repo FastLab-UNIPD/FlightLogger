@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -37,10 +37,36 @@ class MessagesTable(QWidget):
         self.table = _table(["Time", "Level", "Message"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._on_click)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        copy_act = QAction("Copy", self.table)
+        copy_act.setShortcut(QKeySequence.Copy)
+        copy_act.setShortcutContext(Qt.WidgetShortcut)
+        copy_act.triggered.connect(self.copy_selected)
+        self.table.addAction(copy_act)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.table)
+
+    def copy_selected(self):
+        """Selected rows as tab-separated text: time, level, message."""
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        lines = ["\t".join(self.table.item(r, c).text() for c in range(3)) for r in rows
+                 if self.table.item(r, 0) is not None]
+        if lines:
+            QGuiApplication.clipboard().setText("\n".join(lines))
+
+    def _context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        if row not in {i.row() for i in self.table.selectedIndexes()}:
+            self.table.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction("Copy", self.copy_selected)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def set_log(self, log: FlightLog | None):
         msgs = log.messages() if log else []

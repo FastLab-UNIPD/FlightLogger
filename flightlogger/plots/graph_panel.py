@@ -278,14 +278,16 @@ class GraphPlot:
                 continue
             t, t_end, name = sig
             color = pg.mkColor(name)
+            line_c = pg.mkColor(name)
+            line_c.setAlpha(153)         # ~60%: markers must not hide the data
             if t_end is None:
                 it = pg.InfiniteLine(t, angle=90, movable=False,
-                                     pen=pg.mkPen(color, width=1.5, style=Qt.DashLine))
+                                     pen=pg.mkPen(line_c, width=1.5, style=Qt.DashLine))
             else:
                 fill = pg.mkColor(name)
-                fill.setAlpha(45)
+                fill.setAlpha(30)
                 it = pg.LinearRegionItem((t, t_end), movable=False, brush=fill,
-                                         pen=pg.mkPen(color, width=1))
+                                         pen=pg.mkPen(line_c, width=1))
             it.setZValue(-50)
             self.item.addItem(it, ignoreBounds=True)
             self._note_map[nid] = (sig, it)
@@ -521,6 +523,7 @@ class GraphPanel(QWidget):
         self._syncing = False
         self._range: tuple[float, float] | None = None
         self._notes: list = []
+        self._note_markers = True
         self._messages: list = []
         # plot specs waiting for a log (a layout applied before a log is open)
         self._pending: list[dict] | None = None
@@ -630,8 +633,18 @@ class GraphPanel(QWidget):
 
     def set_notes(self, notes):
         self._notes = list(notes)
+        self._feed_notes()
+
+    def set_note_markers(self, on: bool):
+        """Show or hide the note markers on the plots (the notes themselves are kept)."""
+        if on != self._note_markers:
+            self._note_markers = on
+            self._feed_notes()
+
+    def _feed_notes(self):
+        shown = self._notes if self._note_markers else []
         for p in self._time_plots():
-            p.set_notes(self._notes)
+            p.set_notes(shown)
 
     def set_messages(self, messages):
         self._messages = list(messages)
@@ -659,7 +672,7 @@ class GraphPanel(QWidget):
             p.set_modes(self.log.mode_segments())
             if "replay" not in self.log.info:
                 p.set_param_changes(self.log.param_changes())
-        p.set_notes(self._notes)
+        p.set_notes(self._notes if self._note_markers else [])
         p.set_messages(self._messages)
         self.plots.insert(len(self.plots) if index is None else min(index, len(self.plots)), p)
         if relayout:
@@ -902,7 +915,7 @@ class GraphPanel(QWidget):
         for p in self._time_plots():
             if p.vb.sceneBoundingRect().contains(pos):
                 x = p.vb.mapSceneToView(pos).x()
-                show_preview_at(self._notes, self._messages, x, 6 * p.vb.viewPixelSize()[0],
+                show_preview_at(self._notes if self._note_markers else [], self._messages, x, 6 * p.vb.viewPixelSize()[0],
                                 self.view.mapToGlobal(self.view.mapFromScene(pos)))
                 return
 

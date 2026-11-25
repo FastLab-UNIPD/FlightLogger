@@ -218,6 +218,8 @@ class MainWindow(QMainWindow):
         self._loader: _LoadThread | None = None
         self._load_threads: set = set()
         self.notes = NotesModel(self)
+        self.hidden_sets: set[str] = set()      # note sets hidden everywhere ("" = no set)
+        self.plot_note_markers = True
         self.layouts = LayoutStore()
         self.presets = PresetStore()
         self.recent = RecentProjects()
@@ -248,10 +250,11 @@ class MainWindow(QMainWindow):
         self.video_panel.openRequested.connect(self.open_video_dialog)
         self.video_panel.overlayRequested.connect(
             lambda kind, on: (self.video_notes_act if kind == "notes" else self.video_msgs_act).setChecked(on))
-        self.video_panel.notes_source = lambda: self.notes.notes
+        self.video_panel.notes_source = self.visible_notes
         self.video_panel.messages_source = self._video_messages
         self.notes_panel = NotesPanel(self.bus, self.notes)
         self.notes_panel.exportRequested.connect(self.export_notes_dialog)
+        self.notes_panel.hiddenSetsChanged.connect(self.set_hidden_sets)
         self.timeline.contextRequested.connect(self._timeline_menu)
 
         panel_dw = self._create_panel_dock()
@@ -323,7 +326,8 @@ class MainWindow(QMainWindow):
         title = title or f"Graphs {pid.rsplit('_', 1)[-1]}"
         panel = GraphPanel(pid, self.bus, title)
         panel.set_log(self.log)
-        panel.set_notes(self.notes.notes)
+        panel.set_note_markers(self.plot_note_markers)
+        panel.set_notes(self.visible_notes())
         panel.set_messages(self._visible_messages())
         panel.activated.connect(self._set_active)
         panel.isolateRequested.connect(self.isolate_plot)
@@ -794,6 +798,8 @@ class MainWindow(QMainWindow):
                                       lambda on: self.video_panel.set_overlay(notes=on))
         self.video_msgs_act = toggle("Show log &messages over the video", "video_messages", False,
                                      lambda on: self.video_panel.set_overlay(messages=on))
+        self.plot_markers_act = toggle("Show note &markers on plots", "plot_note_markers", True,
+                                       self.set_plot_note_markers)
         self.markers_act = toggle("Notes and warnings on the video &bar", "video_markers", True,
                                   self.video_panel.set_show_markers)
         self.timeline_msgs_act = QAction("Show warnings on the &timeline", self, checkable=True)
@@ -1008,11 +1014,38 @@ class MainWindow(QMainWindow):
             return True
         return False
 
-    def _on_notes_changed(self):
-        notes = self.notes.notes
+    def visible_notes(self) -> list:
+        """The notes whose set is not hidden: the one list that feeds plots, timeline, video
+        overlay and the notes list."""
+        if not self.hidden_sets:
+            return self.notes.notes
+        return [n for n in self.notes if n.set not in self.hidden_sets]
+
+    def set_hidden_sets(self, names, mark_dirty: bool = True):
+        names = set(names)
+        if names == self.hidden_sets:
+            return
+        self.hidden_sets = names
+        self.notes_panel.set_hidden_sets(names)
+        self._feed_notes()
+        if mark_dirty:
+            self._set_dirty(True)
+
+    def set_plot_note_markers(self, on: bool):
+        self.plot_note_markers = bool(on)
+        for panel, _ in self.panels.values():
+            panel.set_note_markers(self.plot_note_markers)
+
+    def _feed_notes(self):
+        notes = self.visible_notes()
         for panel, _ in self.panels.values():
             panel.set_notes(notes)
         self.timeline.set_notes(notes)
+        self.video_panel.update_overlay()
+        self.video_panel.update_markers()
+
+    def _on_notes_changed(self):
+        self._feed_notes()
         self.video_panel.update_overlay()
         self.video_panel.update_markers()
         self.undo_mgr.on_notes_changed()
@@ -1157,6 +1190,7 @@ class MainWindow(QMainWindow):
                 **({"trim": list(self.bus.trim)} if self.bus.trim else {}),
                 "speed": self.clock.speed,
                 "notes": self.notes.to_list(),
+                **({"hidden_sets": sorted(self.hidden_sets)} if self.hidden_sets else {}),
                 "layout": self.capture_layout()}
 
     def save_project(self, path: str | Path | None = None, ask: bool = False) -> bool:
@@ -1239,7 +1273,12 @@ class MainWindow(QMainWindow):
             return False
         self.clock.pause()
         self.project_path = Path(path)
+        self.hidden_sets = set()
+        self.notes_panel.set_hidden_sets(set())
         self.notes.load_list(data.get("notes", []))
+        hs = data.get("hidden_sets")
+        if isinstance(hs, list):
+            self.set_hidden_sets([str(x) for x in hs], mark_dirty=False)
         self.apply_layout(data.get("layout", {}))
         self.clock.set_sync(Sync.from_dict(data.get("sync") or {}))
         log_entry = data.get("log") or {}
@@ -1432,7 +1471,8 @@ class MainWindow(QMainWindow):
             return
         dlg = ExportNotesDialog(self, self.settings.get("notes_export_format", "txt"),
                                 bool(self.settings.get("notes_export_messages", False)),
-                                self.settings.get("notes_export_level", "warnings"), has_log)
+                                self.settings.get("notes_export_level", "warnings"), has_log,
+                                bool(self.hidden_sets))
         if dlg.exec() != QDialog.Accepted:
             return
         fmt, include, level = dlg.values()
@@ -1453,17 +1493,18 @@ class MainWindow(QMainWindow):
         if not Path(path).suffix:
             path += EXTENSIONS[fmt]
         self.last_dirs.remember("notes_export", path)
-        self.export_notes(path, fmt, include, level)
+        self.export_notes(path, fmt, include, level, dlg.only_visible())
 
     def export_notes(self, path: str, fmt: str = "txt", include_messages: bool = False,
-                     level: str = "warnings"):
+                     level: str = "warnings", only_visible: bool = False):
         self.notes_panel.flush_edits()
+        notes = self.visible_notes() if only_visible else self.notes.notes
         msgs = filter_messages(self.log.messages(), level) if include_messages and self.log else []
         title = (self.project_path.stem if self.project_path
                  else self.log.path.stem if self.log else "")
-        Path(path).write_text(render(self.notes.notes, fmt, msgs, title),
+        Path(path).write_text(render(notes, fmt, msgs, title),
                               encoding="utf-8", newline="")
-        self.statusBar().showMessage(f"Exported {len(self.notes)} notes to {path}", 5000)
+        self.statusBar().showMessage(f"Exported {len(notes)} notes to {path}", 5000)
 
     def set_message_mode(self, mode: str):
         if mode not in MESSAGE_FILTERS:
