@@ -350,8 +350,8 @@ class VideoPanel(QWidget):
         self._update_enabled()
 
     # --- overlay ---
-    NOTE_HOLD = 4.0     # an instant note stays on screen this long after its time
-    NOTE_LEAD = 1.5     # ... and appears this much before it
+    NOTE_HOLD = 1.0     # an instant note stays on screen this long after its time
+    NOTE_LEAD = 1.0     # ... and appears this much before it
     MSG_HOLD = 6.0
     MSG_LEAD = 1.0
     FLASH_IN, FLASH_OUT = 0.4, 0.7   # background flash: fades in before / out after the timestamp

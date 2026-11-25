@@ -45,7 +45,12 @@ class _Renderer:
         keyed = {it[2] if len(it) > 2 else it[0]: (it[0], it[1]) for it in items}
         shown = admit(self.boxes, keyed, OV_MAX_BOXES)
         for key in [k for k in self.boxes if k not in shown]:
-            self.boxes.pop(key).deleteLater()
+            gone = self.boxes.pop(key)
+            # deleteLater() alone never runs here (no event loop), so the dropped box would stay a
+            # visible child of the overlay and be painted under the new ones (ghost text)
+            gone.hide()
+            gone.setParent(None)
+            gone.deleteLater()
             self.ys.pop(key, None)
         for key in shown:
             html, flash = keyed[key]
