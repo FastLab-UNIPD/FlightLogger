@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QComboBox, QHBox
 from ..plots.common import fmt_time
 from ..timebus import TimeBus
 from ..ui import icons
+from ..ui.tables import CopyKeyFilter
 from .model import CATEGORIES, DEFAULT_CATEGORY, Note, NotesModel
 
 ID_ROLE = Qt.UserRole
@@ -68,11 +69,7 @@ class NotesPanel(QWidget):
         self.table.cellClicked.connect(self._on_click)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
-        copy_act = QAction("Copy", self.table)
-        copy_act.setShortcut(QKeySequence.Copy)
-        copy_act.setShortcutContext(Qt.WidgetShortcut)
-        copy_act.triggered.connect(self.copy_selected)
-        self.table.addAction(copy_act)
+        self._copy_filter = CopyKeyFilter(self.table, self.copy_selected)
 
         # editor
         self.title = QLineEdit(placeholderText="Title")

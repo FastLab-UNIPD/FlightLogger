@@ -1,7 +1,7 @@
 """Logged messages and parameters tables (Flight Review shows both below the graphs)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -15,6 +15,22 @@ LEVEL_COLORS = {"WARNING": QColor(255, 236, 200), "ERROR": QColor(255, 210, 210)
                 "CRITICAL": QColor(255, 190, 190), "ALERT": QColor(255, 190, 190),
                 "EMERGENCY": QColor(255, 170, 170)}
 RED = QColor("#d55e00")  # Flight Review: non-airframe-default values in red
+
+
+class CopyKeyFilter(QObject):
+    """Ctrl+C in a table: a key filter, not a QAction (every shortcut action is made app-wide, and
+    two of them with the same keys cancel each other)."""
+
+    def __init__(self, table, callback):
+        super().__init__(table)
+        self.callback = callback
+        table.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.KeyPress and ev.matches(QKeySequence.Copy):
+            self.callback()
+            return True
+        return False
 
 
 def _table(headers) -> QTableWidget:
@@ -41,11 +57,7 @@ class MessagesTable(QWidget):
         self.table.cellClicked.connect(self._on_click)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
-        copy_act = QAction("Copy", self.table)
-        copy_act.setShortcut(QKeySequence.Copy)
-        copy_act.setShortcutContext(Qt.WidgetShortcut)
-        copy_act.triggered.connect(self.copy_selected)
-        self.table.addAction(copy_act)
+        self._copy_filter = CopyKeyFilter(self.table, self.copy_selected)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.table)
