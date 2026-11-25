@@ -35,18 +35,22 @@ def export_range(kind: str, sync, log_duration: float, video_duration: float,
                  trim=None, x_range=None) -> tuple[float, float]:
     """Video-time interval (v0, v1) to export.
 
-    kind: "video" (whole video, or ``trim`` = (v0, v1) in video seconds), "log" (the whole log
-    mapped to the video), "visible" / "zoom" (``x_range`` = (t0, t1) in log seconds: the visible
-    plot range / the zoomed range). Clipped to [0, video_duration]; ValueError if empty."""
+    kind: "video" (whole video), "log" (the whole log mapped to the video), "visible" (``trim`` =
+    (t0, t1) log seconds, the non-hidden range, TimeBus.trim), "zoom" (``x_range`` = (t0, t1) log
+    seconds, the zoomed plot range). Clipped to [0, video_duration]; ValueError if empty."""
     if not video_duration or video_duration <= 0:
         raise ValueError("No video is loaded")
     if kind == "video":
-        a, b = (0.0, video_duration) if trim is None else (float(trim[0]), float(trim[1]))
+        a, b = 0.0, float(video_duration)
     elif kind == "log":
         if not log_duration or log_duration <= 0:
             raise ValueError("No log is loaded")
         a, b = sync.to_video(0.0), sync.to_video(float(log_duration))
-    elif kind in ("visible", "zoom"):
+    elif kind == "visible":      # the non-hidden time range (TimeBus.trim, log seconds)
+        if trim is None:
+            raise ValueError("No hidden time range is set")
+        a, b = sync.to_video(float(trim[0])), sync.to_video(float(trim[1]))
+    elif kind == "zoom":         # the zoomed plot range (log seconds)
         if x_range is None:
             raise ValueError("No plot range available")
         a, b = sync.to_video(float(x_range[0])), sync.to_video(float(x_range[1]))
