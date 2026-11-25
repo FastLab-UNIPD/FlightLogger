@@ -506,14 +506,15 @@ class GraphPanel(QWidget):
         self.follow_btn = QToolButton(text="Follow", checkable=True, checked=True,
                                       toolTip="Scroll the view to keep the cursor visible")
         fit_btn = QToolButton(text="Fit", toolTip="Show the whole flight and re-enable automatic Y scaling")
-        self.box_btn = QToolButton(text="Box zoom", checkable=True,
+        self.box_btn = QToolButton(checkable=True,
                                    toolTip="On: drag a rectangle to zoom both axes (wheel stays X-only).\n"
                                            "Fit or a plot's \u201cAuto Y range\u201d restores automatic Y.")
         self.box_btn.toggled.connect(self._apply_box_zoom)
         for b, name in ((add_btn, "plus"), (self.link_btn, "link"), (self.follow_btn, "follow"),
-                        (fit_btn, "fit")):
+                        (fit_btn, "fit"), (self.box_btn, "box_zoom")):
             icons.decorate(b, name)
-            b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly if b is self.box_btn
+                                 else Qt.ToolButtonTextBesideIcon)
         fit_btn.clicked.connect(self.fit_all)
         self.height_box = QComboBox(toolTip="Plot height")
         self.height_box.setFocusPolicy(Qt.NoFocus)

@@ -508,6 +508,7 @@ class MainWindow(QMainWindow):
             return False
         self.panels.pop(pid)
         self.undo_mgr.forget_panel(pid)
+        panel.clear()   # also drops a stale plot highlight
         self.docks.mgr.removeDockWidget(dw)
         dw.deleteLater()
         if panel is self.active_panel:

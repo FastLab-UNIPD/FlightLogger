@@ -36,8 +36,25 @@ class ParamHelpPopup(QWidget):
         p = cls.instance(parent)
         p.set_param(name, value, default)
         p.show()
+        p._center()
         p.raise_()
         return p
+
+    def _center(self):
+        """Centre on the top-level window of the parent (or the main window), kept on screen."""
+        from PySide6.QtWidgets import QApplication
+        ref = self.parentWidget().window() if self.parentWidget() is not None else None
+        if ref is None or ref is self:
+            ref = next((w for w in QApplication.topLevelWidgets()
+                        if w.isVisible() and w is not self and not w.windowFlags() & Qt.Tool), None)
+        if ref is None:
+            return
+        scr = ref.screen().availableGeometry()
+        c = ref.frameGeometry().center()
+        g = self.frameGeometry()
+        x = min(max(c.x() - g.width() // 2, scr.left()), max(scr.left(), scr.right() - g.width() + 1))
+        y = min(max(c.y() - g.height() // 2, scr.top()), max(scr.top(), scr.bottom() - g.height() + 1))
+        self.move(x, y)
 
     def set_param(self, name: str, value=None, default=None):
         self.setWindowTitle(f"Parameter help - {name}")

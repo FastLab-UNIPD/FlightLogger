@@ -49,6 +49,8 @@ SVG = {
               f'<circle cx="12" cy="12" r="1.6" {_FILL}/>',
     "fit": '<path d="M3 12h18"/><path d="M7 8l-4 4 4 4M17 8l4 4-4 4"/>',
     "graph": '<path d="M4 4v16h16"/><path d="M7 14l4-4 3 3 5-6"/>',
+    "box_zoom": '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4M4 15v4M4 12v0" stroke-dasharray="2.4 2.6"/>'
+                '<path d="M4 4h6M4 4v6" /><circle cx="14.5" cy="14.5" r="4.5"/><path d="M18 18l3 3"/>',
     "check_all": '<path d="M4 12.5l5 5L20 6.5"/>',
     "clear": '<path d="M6 6l12 12M18 6L6 18"/>',
     # notes / files
