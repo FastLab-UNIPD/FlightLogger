@@ -209,13 +209,20 @@ class Playback(QObject):
                 self.video.play()
                 self.playingChanged.emit(True)
             return
-        if self.bus.t >= self.bus.duration:
-            self.bus.seek(0.0)
+        lo, hi = self._play_limits()
+        if self.bus.t >= hi:
+            self.bus.seek(lo)
+        elif self.bus.t < lo:
+            self.bus.seek(lo)
         self._playing = True
         self._elapsed.start()
         self._timer.start()
         self._choose_master()
         self.playingChanged.emit(True)
+
+    def _play_limits(self) -> tuple[float, float]:
+        tr = self.bus.trim
+        return (tr[0], tr[1]) if tr else (0.0, self.bus.duration)
 
     def pause(self):
         if not self._playing:
@@ -268,8 +275,9 @@ class Playback(QObject):
                 if pos is not None:  # continue from the last frame shown
                     self.bus.set_time(self.sync.to_log(pos))
         t = self.bus.t + dt * self._speed
-        if t >= self.bus.duration:
-            self.bus.set_time(self.bus.duration)
+        end = self._play_limits()[1]
+        if t >= end:
+            self.bus.set_time(end)
             self.pause()
             return
         self.bus.set_time(t)
@@ -304,6 +312,10 @@ class Playback(QObject):
             self._stepping = False
             self.bus.set_time(self.sync.to_log(pos))
         elif self._playing and self._master == "video":
+            if self.sync.to_log(pos) >= self._play_limits()[1]:
+                self.bus.set_time(self._play_limits()[1])
+                self.pause()
+                return
             self._pending_pos = pos
             if not self._cursor_timer.isActive():
                 self._apply_pending_pos()

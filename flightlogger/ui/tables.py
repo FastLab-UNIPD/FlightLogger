@@ -4,7 +4,8 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QSplitter, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..log.ulog_loader import FlightLog
 from ..plots.common import fmt_time
@@ -62,26 +63,57 @@ class MessagesTable(QWidget):
             self.bus.seek(float(it.data(Qt.UserRole)))
 
 
+_ALL, _CHANGED = "\0all", "\0changed"
+_COL_NAME, _COL_GROUP, _COL_VALUE, _COL_DEFAULT = 0, 1, 2, 3
+
+
+def _param_group(name: str) -> str:
+    from ..log import param_meta
+    meta = param_meta.lookup(name)
+    if meta is None:
+        return "Other"
+    g = meta.get("group")
+    return g or (name.split("_", 1)[0] if "_" in name else "Other")
+
+
 class ParamsTable(QWidget):
+    _splitter_sizes: list | None = None     # remembered in-session only
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.filter = QLineEdit(placeholderText="Filter parameters", clearButtonEnabled=True)
         self.changed_only = QCheckBox("Changed from default only")
         self.filter.textChanged.connect(self._apply_filter)
         self.changed_only.toggled.connect(self._apply_filter)
-        self.table = _table(["Name", "Value", "Default"])
+        self.table = _table(["Name", "Group", "Value", "Default"])
         self.table.setSortingEnabled(True)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.installEventFilter(self)
         self._defaults: dict | None = None
+        self.group_list = QListWidget()
+        self.group_list.setMinimumWidth(80)
+        self.group_list.currentItemChanged.connect(lambda *_: self._apply_filter())
         row = QHBoxLayout()
         row.addWidget(self.filter, 1)
         row.addWidget(self.changed_only)
+        right = QWidget()
+        rlay = QVBoxLayout(right)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.addLayout(row)
+        rlay.addWidget(self.table)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.group_list)
+        self.splitter.addWidget(right)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([170, 700])
+        self.splitter.splitterMoved.connect(
+            lambda *_: setattr(ParamsTable, "_splitter_sizes", self.splitter.sizes()))
+        if ParamsTable._splitter_sizes:
+            self.splitter.setSizes(ParamsTable._splitter_sizes)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addLayout(row)
-        lay.addWidget(self.table)
+        lay.addWidget(self.splitter)
 
     def set_log(self, log: FlightLog | None):
         self.table.setSortingEnabled(False)
@@ -92,15 +124,20 @@ class ParamsTable(QWidget):
         self.changed_only.setToolTip("" if defaults is not None
                                      else "This log does not contain default values")
         self.table.setRowCount(len(params))
+        counts: dict[str, int] = {}
+        n_changed = 0
         for r, name in enumerate(sorted(params)):
             value = params[name]
             default = defaults.get(name) if defaults else None
             changed = default is not None and abs(float(default) - float(value)) > 1e-5
-            cells = [QTableWidgetItem(name), QTableWidgetItem(_fmt(value)),
+            group = _param_group(name)
+            counts[group] = counts.get(group, 0) + 1
+            n_changed += bool(changed)
+            cells = [QTableWidgetItem(name), QTableWidgetItem(group), QTableWidgetItem(_fmt(value)),
                      QTableWidgetItem("" if default is None else _fmt(default))]
             cells[0].setData(Qt.UserRole, changed)
-            cells[1].setData(Qt.UserRole + 1, value)      # raw values for parameter help
-            cells[2].setData(Qt.UserRole + 1, default)
+            cells[2].setData(Qt.UserRole + 1, value)      # raw values for parameter help
+            cells[3].setData(Qt.UserRole + 1, default)
             for c, it in enumerate(cells):
                 if changed:
                     it.setForeground(QBrush(RED))
@@ -108,7 +145,42 @@ class ParamsTable(QWidget):
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.AscendingOrder)
         self.table.resizeColumnsToContents()
+        self._fill_groups(len(params), counts, n_changed if defaults is not None else None)
+
+    def _fill_groups(self, total: int, counts: dict, n_changed: int | None):
+        """Group list: All, Changed from default (if defaults exist), then groups A-Z."""
+        prev = self.group_list.currentItem()
+        prev_key = prev.data(Qt.UserRole) if prev else _ALL
+        lst = self.group_list
+        lst.blockSignals(True)
+        lst.clear()
+        entries = [(f"All ({total})", _ALL)]
+        if n_changed is not None:
+            entries.append((f"Changed from default ({n_changed})", _CHANGED))
+        entries += [(f"{g} ({n})", g) for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
+        sel = 0
+        for i, (label, key) in enumerate(entries):
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, key)
+            lst.addItem(it)
+            if key == prev_key:
+                sel = i
+        lst.setCurrentRow(sel)
+        lst.blockSignals(False)
         self._apply_filter()
+
+    def select_group(self, key: str) -> bool:
+        """Select a group by name (or "All" / "Changed"); False when not in the list."""
+        key = {"All": _ALL, "Changed": _CHANGED}.get(key, key)
+        for i in range(self.group_list.count()):
+            if self.group_list.item(i).data(Qt.UserRole) == key:
+                self.group_list.setCurrentRow(i)
+                return True
+        return False
+
+    def group_names(self) -> list[str]:
+        """The list's labels, e.g. "All (1250)", "Battery (12)"."""
+        return [self.group_list.item(i).text() for i in range(self.group_list.count())]
 
     # --- parameter help (H), copy ---
     def eventFilter(self, obj, ev):
@@ -123,8 +195,8 @@ class ParamsTable(QWidget):
         if r < 0 or self.table.item(r, 0) is None:
             return None
         it = self.table.item
-        return (it(r, 0).text(), it(r, 1).data(Qt.UserRole + 1), it(r, 2).data(Qt.UserRole + 1),
-                it(r, 1).text())
+        return (it(r, 0).text(), it(r, _COL_VALUE).data(Qt.UserRole + 1),
+                it(r, _COL_DEFAULT).data(Qt.UserRole + 1), it(r, _COL_VALUE).text())
 
     def show_help(self, row: int | None = None):
         cur = self._current(row)
@@ -147,10 +219,17 @@ class ParamsTable(QWidget):
     def _apply_filter(self, *_):
         words = self.filter.text().upper().split()
         only = self.changed_only.isChecked() and self.changed_only.isEnabled()
+        cur = self.group_list.currentItem()
+        sel = cur.data(Qt.UserRole) if cur else _ALL
+        if sel == _CHANGED and not self.changed_only.isEnabled():
+            sel = _ALL
         for r in range(self.table.rowCount()):
             it = self.table.item(r, 0)
             name = it.text()
-            hide = (words and not all(w in name for w in words)) or (only and not it.data(Qt.UserRole))
+            changed = it.data(Qt.UserRole)
+            hide = ((words and not all(w in name for w in words)) or (only and not changed)
+                    or (sel == _CHANGED and not changed)
+                    or (sel not in (_ALL, _CHANGED) and self.table.item(r, _COL_GROUP).text() != sel))
             self.table.setRowHidden(r, bool(hide))
 
 
