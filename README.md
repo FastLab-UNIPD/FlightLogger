@@ -17,11 +17,10 @@ undo, graph editing and a layout you can spread over several screens.
 
 ![FlightLogger: flight video synced to Flight Review graphs, track, timeline and notes](docs/screenshot.png)
 
-*A PX4 log with its ground-camera video synced: video with notes and PX4
-warnings drawn over it (left), Flight Review graphs with a note span and the
-selected plot framed (center), track and notes (right), whole-flight timeline
-(bottom). The lavender dark theme follows the look of OmniQuadGUI; a light theme
-is one click away.*
+*A PX4 log with its ground-camera video synced: a note and a PX4 warning drawn over the
+video (left), graph panels named and tabbed by topic (center), track and parameters grouped by
+category (right), whole-flight timeline with staggered note titles and its lock button (bottom).
+The lavender dark theme follows the look of OmniQuadGUI; a light theme is one click away.*
 
 ## What it adds to Flight Review
 
