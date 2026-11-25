@@ -12,7 +12,7 @@ NO_APT=0
 # --- system packages ---------------------------------------------------------
 # libmpv: package name differs between releases (22.04: libmpv1, 24.04+: libmpv2)
 if apt-cache show libmpv2 >/dev/null 2>&1; then MPV_PKG=libmpv2; else MPV_PKG=libmpv1; fi
-PKGS=(python3-venv "$MPV_PKG" libxcb-cursor0 libgl1 libegl1)
+PKGS=(python3-venv "$MPV_PKG" libxcb-cursor0 libgl1 libegl1 ffmpeg)
 missing=()
 for p in "${PKGS[@]}"; do
     dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")

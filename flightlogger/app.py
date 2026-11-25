@@ -1,7 +1,11 @@
 """Main window: dock layout, menus, transport bar, keyboard handling, log loading."""
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSize, Qt, QThread, QTimer, Signal
@@ -767,6 +771,7 @@ class MainWindow(QMainWindow):
                             triggered=lambda: self.save_project(ask=True)))
         m.addAction(QAction("Export &shareable project…", self, triggered=self.export_shareable_dialog))
         m.addAction(QAction("&Export notes as text…", self, triggered=self.export_notes_dialog))
+        m.addAction(QAction("Export &video with overlay…", self, triggered=self.export_video_dialog))
         m.addSeparator()
         m.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
 
@@ -1628,6 +1633,174 @@ class MainWindow(QMainWindow):
         Path(path).write_text(render(notes, fmt, msgs, title),
                               encoding="utf-8", newline="")
         self.statusBar().showMessage(f"Exported {len(notes)} notes to {path}", 5000)
+
+    # --- video export with notes overlay ---
+    def _video_overlay_options(self, notes_on: bool, msgs_on: bool):
+        from .video.overlay_model import OverlayOptions
+        vp = self.video_panel
+        return OverlayOptions(notes_on, msgs_on, vp.NOTE_LEAD, vp.NOTE_HOLD, vp.MSG_LEAD,
+                              vp.MSG_HOLD, vp.FLASH_IN, vp.FLASH_OUT)
+
+    def export_video(self, out_path: str, range_kind: str = "log", notes_on: bool = True,
+                     msgs_on: bool = True, clock_pos: str | None = None,
+                     preset_key: str = "fast_cpu", resolution: str = "original",
+                     progress=None, cancel=None, encode_runner=None) -> str:
+        """Export the video with the overlay burnt in; returns the preset actually used ("" if
+        cancelled). ``progress(fraction 0..1, text)``, ``cancel() -> bool``. Raises ValueError for
+        an unusable range and ExportError when ffmpeg fails. ``encode_runner(fn)`` runs the
+        ffmpeg step (fn(progress, cancel)); the GUI passes one that keeps the window alive."""
+        from .video import export as ex
+        from .video.export_render import render_states
+        video = self.video_panel.video_path
+        if not video:
+            raise ValueError("No video is loaded")
+        progress = progress or (lambda _f, _t="": None)
+        cancel = cancel or (lambda: False)
+        info = ex.probe_video(video)
+        sync = self.clock.sync
+        v0, v1 = ex.export_range(range_kind, sync, self.log.duration if self.log else 0.0,
+                                 info["duration"], trim=self.bus.trim, x_range=self.bus.x_range)
+        opts = self._video_overlay_options(notes_on, msgs_on)
+        notes = self.visible_notes() if notes_on else []
+        msgs = self._video_messages() if msgs_on else []
+        size = (info["width"], info["height"])
+        out_size = ex.output_size(size[0], size[1], resolution)
+        total = v1 - v0
+        tmp = tempfile.mkdtemp(prefix="flightlogger-export-")
+        try:
+            states = ex.state_timeline(v0, v1, notes, msgs, opts, sync, info["fps"])
+            concat = None
+            if any(st.items for st in states):
+                progress(0.0, "Drawing notes…")
+                pngs, empty = render_states(
+                    states, out_size, self.video_panel.overlay_scale, tmp,
+                    lambda d, n: progress(0.2 * d / max(n, 1), "Drawing notes…"), cancel)
+                if cancel():
+                    return ""
+                concat = str(Path(tmp) / "overlay.ffconcat")
+                ex.write_ffconcat(states, pngs, concat, empty)
+            clock = None
+            if clock_pos:
+                clock = {"offset": sync.offset, "scale": sync.scale, "position": clock_pos}
+            encoders = ex.probe_encoders()
+
+            def make_cmd(key):
+                return ex.build_command(video, v0, v1, concat, out_path, key, encoders, resolution,
+                                        clock, info["audio_codec"], size)
+
+            def encode(_p=None, _c=None):
+                return ex.export_with_fallback(
+                    make_cmd, preset_key, total,
+                    lambda d, t: progress(0.2 + 0.8 * d / max(t, 1e-9), "Encoding video…"), cancel)
+            return (encode_runner or (lambda fn: fn()))(encode)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def export_video_dialog(self):
+        from .video.export import ExportError, export_range, probe_video
+        from .video.export_dialog import VideoExportDialog, ffmpeg_missing_message
+        if not self.interactive:
+            return
+        video = self.video_panel.video_path
+        if not video:
+            QMessageBox.information(self, "Export video",
+                                    "Open a video first (File > Open video…), then sync it with the log.")
+            return
+        missing = ffmpeg_missing_message()
+        if missing:
+            QMessageBox.information(self, "Export video", missing)
+            return
+        if self._busy:
+            self.statusBar().showMessage("Still working…", 3000)
+            return
+        try:
+            info = probe_video(video)
+        except ExportError as e:
+            QMessageBox.critical(self, "Export video", str(e))
+            return
+        durations, reasons = {}, {}
+        ldur = self.log.duration if self.log else 0.0
+        for kind in ("video", "log", "visible", "zoom"):
+            try:
+                if kind == "visible" and self.bus.trim is None:
+                    raise ValueError("Nothing is hidden: use 'Hide before/after cursor' on the "
+                                     "timeline to choose a visible range")
+                if kind == "zoom" and self.bus.x_range is None:
+                    raise ValueError("No plot range available")
+                a, b = export_range(kind, self.clock.sync, ldur, info["duration"],
+                                    trim=self.bus.trim, x_range=self.bus.x_range)
+                durations[kind] = b - a
+            except ValueError as e:
+                durations[kind], reasons[kind] = None, str(e)
+        stem = self.project_path.stem if self.project_path else Path(video).stem
+        base = self.project_path.parent if self.project_path else Path(video).parent
+        dlg = VideoExportDialog(self, durations, reasons, (info["width"], info["height"]),
+                                f"{stem} - overlay.mp4", self.last_dirs.get("video_export", base),
+                                self.settings)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        self.last_dirs.remember("video_export", v["out_path"])
+        if self._busy:
+            return
+        self._busy = True
+        dlgp = QProgressDialog("Exporting video…", "Cancel", 0, 1000, self)
+        dlgp.setWindowTitle("FlightLogger")
+        dlgp.setWindowModality(Qt.WindowModal)
+        dlgp.setMinimumDuration(0)
+        dlgp.setAutoClose(False)
+        dlgp.setAutoReset(False)
+        state = {"frac": 0.0, "text": "Exporting video…", "cancel": False}
+        dlgp.canceled.connect(lambda: state.__setitem__("cancel", True))
+
+        def pump():
+            dlgp.setValue(int(state["frac"] * 1000))
+            dlgp.setLabelText(state["text"])
+            QApplication.processEvents()
+
+        def progress(frac, text=""):
+            state["frac"], state["text"] = frac, text or state["text"]
+            if threading.current_thread() is threading.main_thread():
+                pump()
+
+        def runner(fn):     # ffmpeg step in a thread; the GUI thread keeps the dialog alive
+            box = {}
+
+            def work():
+                try:
+                    box["r"] = fn()
+                except BaseException as e:   # re-raised on the GUI thread
+                    box["e"] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+            while th.is_alive():
+                pump()
+                time.sleep(0.05)
+            th.join()
+            if "e" in box:
+                raise box["e"]
+            return box.get("r", "")
+        pump()
+        try:
+            used = self.export_video(v["out_path"], v["range_kind"], v["notes_on"], v["msgs_on"],
+                                     v["clock_pos"], v["preset_key"], v["resolution"],
+                                     progress, lambda: state["cancel"], runner)
+        except (ExportError, ValueError, OSError) as e:
+            dlgp.close()
+            QMessageBox.critical(self, "Export video", str(e))
+            return
+        finally:
+            dlgp.close()
+            dlgp.deleteLater()
+            self._busy = False
+        name = Path(v["out_path"]).name
+        if state["cancel"] or not used:
+            self.statusBar().showMessage("Video export cancelled", 5000)
+        elif used != v["preset_key"]:
+            self.statusBar().showMessage(
+                f"Exported {name} (the graphics card could not encode, used the CPU instead)", 8000)
+        else:
+            self.statusBar().showMessage(f"Exported {name}", 5000)
 
     def set_message_mode(self, mode: str, persist: bool = True):
         if mode not in MESSAGE_FILTERS:
