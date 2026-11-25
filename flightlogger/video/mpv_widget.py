@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QLabel, QWidget
+from .overlay_model import admit, box_style, flash_level, place_boxes
 
 VIDEO_EXTENSIONS = (".mp4", ".m4v", ".mov", ".3gp", ".3g2", ".mkv", ".webm", ".avi", ".mts", ".m2ts")
 
@@ -158,12 +159,7 @@ class MpvWidget(QOpenGLWidget):
     def _style_box(self, box: QLabel, level: int):
         """Background brightness (flash level 0..8) and proportional text/padding of one box."""
         box._flash_level, box._px = level, self._ov_px
-        k = level / 8
-        r, g, b, a = (round(40 * k), round(40 * k), round(55 * k), round(150 + 35 * k))
-        fp = self._ov_px
-        box.setStyleSheet(f"background: rgba({r}, {g}, {b}, {a}); color: white; "
-                          f"border-radius: {round(fp * 0.46)}px; "
-                          f"padding: {round(fp * 0.46)}px {round(fp * 0.6)}px; font-size: {fp}px;")
+        box.setStyleSheet(box_style(level, self._ov_px))
 
     def _drop_box(self, key):
         box = self._ov_boxes.pop(key)
@@ -179,20 +175,20 @@ class MpvWidget(QOpenGLWidget):
         keyed = {}
         for item in items:
             keyed[item[2] if len(item) > 2 else item[0]] = (item[0], item[1])
-        for key in [k for k in self._ov_boxes if k not in keyed]:
+        shown = admit(self._ov_boxes, keyed, self.OV_MAX_BOXES)
+        for key in [k for k in self._ov_boxes if k not in shown]:
             self._drop_box(key)
-        if not keyed:
+        if not shown:
             self.overlay.hide()
             return
         self._ov_px = self._ov_font_px()
-        for key, (html, flash) in keyed.items():
+        for key in shown:
+            html, flash = keyed[key]
             box = self._ov_boxes.get(key)
             if box is None:
-                if len(self._ov_boxes) >= self.OV_MAX_BOXES:
-                    continue     # no free slot: shown once one of the others has gone
                 box = self._ov_boxes[key] = self._ov_spare.pop() if self._ov_spare else self._new_box()
                 box._flash_level = None
-            level = round(max(0.0, min(1.0, flash)) * 8)   # few steps: no style churn
+            level = flash_level(flash)   # few steps: no style churn
             if level != box._flash_level or self._ov_px != box._px:
                 self._style_box(box, level)
             if html != box.text():
@@ -210,25 +206,24 @@ class MpvWidget(QOpenGLWidget):
         w = max(120, min(int(self.width() * 0.5),
                          int(self.width() * self.OV_WIDTH_FRAC * max(self._ov_scale, 1.0))))
         gap = max(2, round(self._ov_px * 0.3))
-        order = sorted((b for b in boxes if b._y is not None), key=lambda b: b._y)
-        order += [b for b in boxes if b._y is None]
+        by_key = dict(self._ov_boxes)
+        order = sorted((k for k, b in by_key.items() if b._y is not None), key=lambda k: by_key[k]._y)
+        order += [k for k, b in by_key.items() if b._y is None]
         if self._ov_geometry != (w, self._ov_px):   # new size: place again, keeping the order
             self._ov_geometry = (w, self._ov_px)
             for box in boxes:
                 box._y = None
-        for box in order:
+        for k in order:
+            box = by_key[k]
             box.ensurePolished()
             h = box.heightForWidth(w)
             box.resize(w, h if h > 0 else box.sizeHint().height())
-        placed: list = []
-        # boxes already on screen first (they stay put), then the new ones into free space
-        for box in sorted(order, key=lambda b: b._y is None):
-            y = box._y if box._y is not None else 0
-            for other in sorted(placed, key=lambda b: b._y):
-                if y < other._y + other.height() + gap and other._y < y + box.height() + gap:
-                    y = other._y + other.height() + gap   # taken (or grown into): next free spot
-            box._y = y
-            box.move(0, y)
+        ys = place_boxes({k: by_key[k]._y for k in order}, {k: by_key[k].height() for k in order}, gap)
+        placed = []
+        for k in order:
+            box = by_key[k]
+            box._y = ys[k]
+            box.move(0, box._y)
             placed.append(box)
         height = max((b._y + b.height() for b in placed), default=0)
         self.overlay.setFixedSize(w, height)

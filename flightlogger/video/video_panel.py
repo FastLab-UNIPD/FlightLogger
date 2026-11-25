@@ -457,49 +457,12 @@ class VideoPanel(QWidget):
     def update_overlay(self):
         if self.video is None:
             return
-        from html import escape
-        t = self.bus.t
-        rows: list[tuple[str, float, object]] = []   # (html, flash, key) per box
-
-        def pulse(dt: float) -> float:   # dt = now - event time
-            if -self.FLASH_IN <= dt <= 0:
-                return 1 + dt / self.FLASH_IN
-            if 0 < dt <= self.FLASH_OUT:
-                return 1 - dt / self.FLASH_OUT
-            return 0.0
-
-        def span_pulse(start: float, end: float) -> float:   # lit for the whole span
-            if t < start:
-                return pulse(t - start)
-            if t <= end:
-                return 1.0
-            return pulse(t - end)
-
-        if self.overlay_notes:
-            for n in self.notes_source():
-                if n.general:
-                    continue
-                if n.t_end is None:
-                    shown_until = n.t + self.NOTE_HOLD
-                    flash = pulse(t - n.t)
-                else:
-                    # a span is on screen from before its start until after its end, with the
-                    # same offsets as an instant note, and flashes for its whole length
-                    shown_until = n.t_end + self.NOTE_HOLD
-                    flash = span_pulse(n.t, n.t_end)
-                if n.t - self.NOTE_LEAD <= t <= shown_until:
-                    # the whole comment, one overlay line per line of the note
-                    body = (" – " + "<br>".join(escape(l) for l in n.text.strip().splitlines())
-                            if n.text.strip() else "")
-                    rows.append((f'<span style="color:{n.color}">■</span> <b>{escape(n.title)}</b>{body}',
-                                 flash, ("note", n.id)))
-        if self.overlay_messages:
-            colors = {"error": "#ff7b72", "warning": "#f0c04c"}
-            for m in self.messages_source():
-                if t - self.MSG_HOLD <= m.t <= t + self.MSG_LEAD:
-                    c = colors.get(m.level.lower(), "#cccccc")
-                    rows.append((f'<span style="color:{c}">{escape(m.level)}</span> {escape(m.text)}',
-                                 pulse(t - m.t), ("message", m.t, m.text)))
+        from .overlay_model import OverlayOptions, overlay_items
+        opts = OverlayOptions(self.overlay_notes, self.overlay_messages,
+                              self.NOTE_LEAD, self.NOTE_HOLD, self.MSG_LEAD, self.MSG_HOLD,
+                              self.FLASH_IN, self.FLASH_OUT)
+        rows = overlay_items(self.bus.t, self.notes_source() if self.overlay_notes else (),
+                             self.messages_source() if self.overlay_messages else (), opts)
         self.video.set_overlay_items(rows)
 
     # --- markers on the progress bar ---
