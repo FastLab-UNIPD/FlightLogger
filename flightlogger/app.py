@@ -156,6 +156,29 @@ class _KeyFilter(QObject):
         return True
 
 
+class _TabRenamer(QObject):
+    """Double-click / right-click on a graph panel's dock tab: rename it."""
+
+    def __init__(self, win, pid, dw):
+        super().__init__(dw)
+        self.win, self.pid, self.dw = win, pid, dw
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t == QEvent.MouseButtonDblClick and ev.button() == Qt.LeftButton:
+            QTimer.singleShot(0, lambda: self.win.rename_panel_dialog(self.pid))
+            return True
+        if t == QEvent.ContextMenu:
+            menu = QMenu(obj)
+            menu.addAction("Rename panel\u2026", lambda: self.win.rename_panel_dialog(self.pid))
+            menu.addSeparator()
+            menu.addAction("Detach", lambda: self.dw.setFloating())
+            menu.addAction("Close", lambda: self.dw.toggleView(False))
+            menu.exec(ev.globalPos())
+            return True
+        return False
+
+
 class _FloatingKeeper(QObject):
     """Torn-off panels are ordinary top-level windows (own title bar with minimize /
     maximize / close, taskbar entry, free placement on the desktop). This only makes
@@ -349,6 +372,8 @@ class MainWindow(QMainWindow):
         dw.closed.connect(lambda pid=pid: self._on_panel_closed(pid))
         self.panels[pid] = (panel, dw)
         self.active_panel = panel
+        tab = dw.tabWidget()
+        tab.installEventFilter(_TabRenamer(self, pid, dw))
         return dw
 
     def _build_panel_menu(self, menu: QMenu) -> QMenu:
@@ -356,7 +381,7 @@ class MainWindow(QMainWindow):
         # one shared action for every copy of this menu: two with Ctrl+G would be ambiguous
         if getattr(self, "_new_panel_act", None) is None:
             self._new_panel_act = QAction(icons.icon("graph"), "Empty panel", self, shortcut="Ctrl+G",
-                                          triggered=lambda: self.new_panel())
+                                          triggered=lambda: self.new_panel_asking())
         menu.addAction(self._new_panel_act)
         menu.addSeparator()
         for name in GRAPH_PRESETS:
@@ -472,6 +497,16 @@ class MainWindow(QMainWindow):
     def _docked_open(self, panel) -> bool:
         dw = self.panels.get(panel.panel_id, (None, None))[1] if panel else None
         return dw is not None and not dw.isClosed() and not dw.isFloating()
+
+    def new_panel_asking(self):
+        """Empty panel (Ctrl+G): ask for a name; Cancel keeps the default one."""
+        title = None
+        if self.interactive:
+            default = f"Graphs {self._panel_seq + 1}"
+            text, ok = QInputDialog.getText(self, "New panel", "Panel name:", text=default)
+            if ok and text.strip():
+                title = text.strip()
+        return self.new_panel(title)
 
     def new_panel(self, title: str | None = None):
         """New graph panel, side by side with the active one when that one sits in
