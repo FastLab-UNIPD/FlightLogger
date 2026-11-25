@@ -16,7 +16,7 @@ from .notes.export import EXTENSIONS, FILE_FILTERS, render
 from .notes.export_dialog import ExportNotesDialog
 from .notes.model import NotesModel
 from .notes.panel import NotesPanel
-from .project import (PROJECT_EXT, LayoutStore, LastDirs, RecentProjects, Settings, b64, load_project,
+from .project import (PROJECT_EXT, LayoutStore, PresetStore, LastDirs, RecentProjects, Settings, b64, load_project,
                       save_project, unb64)
 from .playback import SPEED_PRESETS, Playback
 from .sync import Sync
@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
         self._load_threads: set = set()
         self.notes = NotesModel(self)
         self.layouts = LayoutStore()
+        self.presets = PresetStore()
         self.recent = RecentProjects()
         self.project_path: Path | None = None
         self.settings = Settings()
@@ -326,6 +327,8 @@ class MainWindow(QMainWindow):
         panel.set_messages(self._visible_messages())
         panel.activated.connect(self._set_active)
         panel.isolateRequested.connect(self.isolate_plot)
+        panel.renameRequested.connect(lambda p: self.rename_panel_dialog(p.panel_id))
+        panel.presetRequested.connect(lambda p: self.save_panel_preset_dialog(p.panel_id))
         panel.previews = self.timeline.previews
         panel.changed.connect(lambda p=panel: self._on_panel_changed(p))
         # Closing a graph panel only hides it (Window menu brings it back);
@@ -346,10 +349,94 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         for name in GRAPH_PRESETS:
             menu.addAction(name, lambda name=name: self.new_preset_panel(name))
+        dynamic: list = []   # the user presets: refilled each time the menu opens
+
+        def refill():
+            for a in dynamic:
+                menu.removeAction(a)
+                (a.menu() or a).deleteLater()
+            dynamic.clear()
+            names = self.presets.names()
+            if not names:
+                return
+            dynamic.append(menu.addSeparator())
+            for n in names:
+                dynamic.append(menu.addAction(n, lambda n=n: self.new_user_preset_panel(n)))
+            sub = menu.addMenu("Delete preset")
+            for n in names:
+                sub.addAction(n, lambda n=n: self.delete_user_preset(n))
+            dynamic.append(sub.menuAction())
+
+        menu.aboutToShow.connect(refill)
         return menu
 
+    def _unique_title(self, base: str) -> str:
+        used = {p.title for p, _ in self.panels.values()}
+        title, n = base, 1
+        while title in used:
+            n += 1
+            title = f"{base} {n}"
+        return title
+
+    def rename_panel(self, pid: str, title: str) -> bool:
+        panel, dw = self.panels.get(pid, (None, None))
+        title = title.strip()
+        if panel is None or not title or title == panel.title:
+            return False
+        panel.title = title
+        self.docks.set_title(dw, title)
+        panel.changed.emit()
+        return True
+
+    def rename_panel_dialog(self, pid: str):
+        panel = self.panels.get(pid, (None, None))[0]
+        if panel is None or not self.interactive:
+            return
+        title, ok = QInputDialog.getText(self, "Rename panel", "Panel name:", text=panel.title)
+        if ok:
+            self.rename_panel(pid, title)
+
+    def save_panel_preset(self, pid: str, name: str) -> bool:
+        panel = self.panels.get(pid, (None, None))[0]
+        if panel is None or not name.strip():
+            return False
+        d = panel.to_dict()
+        d.pop("id", None)
+        self.presets.save(name.strip(), d)
+        return True
+
+    def save_panel_preset_dialog(self, pid: str):
+        panel = self.panels.get(pid, (None, None))[0]
+        if panel is None or not self.interactive:
+            return
+        name, ok = QInputDialog.getText(self, "Save panel as preset", "Preset name:", text=panel.title)
+        name = name.strip()
+        if not (ok and name):
+            return
+        if name in self.presets.names() and QMessageBox.question(
+                self, "Save panel as preset", f"Replace the preset \u201c{name}\u201d?") != QMessageBox.Yes:
+            return
+        self.save_panel_preset(pid, name)
+
+    def new_user_preset_panel(self, name: str):
+        try:
+            d = self.presets.load(name)
+        except (OSError, ValueError, KeyError):
+            return None
+        panel = self.new_panel(self._unique_title(name))
+        panel.load_dict(dict(d, title=panel.title))
+        self._set_active(panel)
+        return panel
+
+    def delete_user_preset(self, name: str, confirm: bool = True) -> bool:
+        if confirm and self.interactive and QMessageBox.question(
+                self, "Delete preset", f"Delete the preset \u201c{name}\u201d?") != QMessageBox.Yes:
+            return False
+        self.presets.delete(name)
+        return True
+
     def new_preset_panel(self, name: str):
-        panel = self.new_panel()
+        panel = self.new_panel(self._unique_title(name))
         if self.log is not None:
             for gid in GRAPH_PRESETS[name]:
                 if gid in self.log.graphs:
@@ -360,7 +447,7 @@ class MainWindow(QMainWindow):
     def isolate_plot(self, plot):
         """Open a copy of a plot in its own landscape floating window (always a fresh window,
         whatever panel is active)."""
-        dw = self._create_panel_dock(deletable=True)
+        dw = self._create_panel_dock(plot.title or None, deletable=True)
         panel = self.panels[dw.objectName()][0]
         panel.load_plots([plot.to_dict()])
         panel.set_plot_height("L")
@@ -374,14 +461,14 @@ class MainWindow(QMainWindow):
         dw = self.panels.get(panel.panel_id, (None, None))[1] if panel else None
         return dw is not None and not dw.isClosed() and not dw.isFloating()
 
-    def new_panel(self):
+    def new_panel(self, title: str | None = None):
         """New graph panel, side by side with the active one when that one sits in
         the main window; otherwise next to the first docked panel (never inside a
         floating or closed panel's window, where it could go unnoticed)."""
         anchor = self.active_panel if self._docked_open(self.active_panel) else next(
             (p for p, _ in self.panels.values() if self._docked_open(p)), None)
         target = self.panels[anchor.panel_id][1].dockAreaWidget() if anchor else None
-        dw = self._create_panel_dock()
+        dw = self._create_panel_dock(title)
         if target is not None:
             self.docks.add(dw, dh.RIGHT, target)
         else:

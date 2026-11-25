@@ -20,6 +20,7 @@ from pathlib import Path
 
 PROJECT_EXT = ".flproj"
 LAYOUT_EXT = ".fllayout"
+PRESET_EXT = ".flpreset"
 FORMAT_VERSION = 1
 
 
@@ -144,6 +145,34 @@ class LayoutStore:
     def startup(self, name: str | None):
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "startup.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+
+
+class PresetStore:
+    """Personal graph-panel presets (one .flpreset per preset in the config folder)."""
+
+    def __init__(self, directory: str | Path | None = None):
+        self.dir = Path(directory) if directory else config_dir() / "presets"
+
+    def _file(self, name: str) -> Path:
+        return self.dir / (_safe_name(name) + PRESET_EXT)
+
+    def names(self) -> list[str]:
+        if not self.dir.is_dir():
+            return []
+        return sorted((f.stem for f in self.dir.glob("*" + PRESET_EXT)), key=str.lower)
+
+    def save(self, name: str, panel: dict):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        data = {"app": "FlightLogger", "version": FORMAT_VERSION, "name": name, "panel": panel}
+        self._file(name).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def load(self, name: str) -> dict:
+        return json.loads(self._file(name).read_text(encoding="utf-8"))["panel"]
+
+    def delete(self, name: str):
+        f = self._file(name)
+        if f.exists():
+            f.unlink()
 
 
 class RecentProjects:

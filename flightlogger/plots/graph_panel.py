@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import shiboken6
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QMenu, QScrollArea,
@@ -43,7 +44,10 @@ def highlighted_plot():
 
 def _clear_highlight(plot) -> None:
     global _highlighted
-    plot.set_frame(False)
+    try:
+        plot.set_frame(False)
+    except RuntimeError:
+        pass
     if _highlighted is plot:
         _highlighted = None
 
@@ -65,6 +69,13 @@ def _cache(item):
     return item
 
 
+class _XWheelViewBox(pg.ViewBox):
+    """The wheel zooms X only, even when Y mouse interaction is on (box zoom)."""
+
+    def wheelEvent(self, ev, axis=None):
+        super().wheelEvent(ev, 0 if axis is None else axis)
+
+
 class GraphPlot:
     """One PlotItem: a Flight Review graph and/or custom signals, plus the cursor."""
 
@@ -75,7 +86,7 @@ class GraphPlot:
         self.title = graph.title if graph else title
         self.time_based = graph.time_based if graph else True
         axis = {"bottom": TimeAxis("bottom")} if self.time_based else {}
-        self.item = pg.PlotItem(axisItems=axis)
+        self.item = pg.PlotItem(axisItems=axis, viewBox=_XWheelViewBox())
         self.item.showGrid(x=not self.time_based, y=True, alpha=0.2)
         self.item.setDownsampling(auto=True, mode="peak")
         self.item.setClipToView(True)
@@ -94,6 +105,7 @@ class GraphPlot:
             self.vb.disableAutoRange(axis="x")
         self.legend = self.item.addLegend(offset=(-6, 4), labelTextSize="8pt",
                                           **theme.legend_style())
+        self.invert_y = False
         self.cursor = None
         if self.time_based:
             self.cursor = pg.InfiniteLine(angle=90, movable=True,
@@ -292,6 +304,10 @@ class GraphPlot:
             self.item.addItem(line, ignoreBounds=True)
 
     def set_frame(self, on: bool):
+        if self._frame is not None and not shiboken6.isValid(self._frame):
+            self._frame = None   # its scene is gone (panel deleted)
+            if not on:
+                return
         if self._frame is None:
             if not on:
                 return
@@ -315,6 +331,30 @@ class GraphPlot:
         for key, curve in self.curves.items():
             out.append((SignalKey.parse(key).label, curve))
         return out
+
+    def set_box_zoom(self, on: bool):
+        """On: dragging draws a rectangle that zooms X and Y (the wheel stays X-only)."""
+        self.vb.setMouseMode(pg.ViewBox.RectMode if on else pg.ViewBox.PanMode)
+        self.vb.setMouseEnabled(x=True, y=bool(on))
+
+    def auto_y(self):
+        """Back to automatic Y scaling (graphs with a fixed Y range get that range again)."""
+        if self.graph is not None and self.graph.y_range is not None:
+            self.vb.disableAutoRange(axis="y")
+            self.vb.setYRange(*self.graph.y_range, padding=0)
+        else:
+            self.vb.enableAutoRange(axis="y")
+
+    def set_invert_y(self, on: bool):
+        self.invert_y = bool(on)
+        self.vb.invertY(self.invert_y)
+        self._flip_act.blockSignals(True)
+        self._flip_act.setChecked(self.invert_y)
+        self._flip_act.blockSignals(False)
+
+    def _flip_toggled(self, on: bool):
+        self.set_invert_y(on)
+        self.panel.changed.emit()
 
     def set_title(self, title: str):
         self.title = title
@@ -355,6 +395,10 @@ class GraphPlot:
         self._rm_menu.aboutToShow.connect(self._fill_rm_menu)
         menu.addAction("Move plot up", lambda: self.panel.move_plot(self, -1))
         menu.addAction("Move plot down", lambda: self.panel.move_plot(self, +1))
+        self._flip_act = menu.addAction("Flip Y axis")
+        self._flip_act.setCheckable(True)
+        self._flip_act.toggled.connect(self._flip_toggled)
+        menu.addAction("Auto Y range", self.auto_y)
         menu.addAction("Edit plot (colors, lines)…", self.edit)
         menu.addAction("Export plot as light image…", self.export_light)
         menu.addAction("Isolate plot in a floating window",
@@ -378,6 +422,8 @@ class GraphPlot:
             d["styles"] = self.styles
         if self.graph is not None and self.title != self.graph.title:
             d["custom_title"] = self.title
+        if self.invert_y:
+            d["invert_y"] = True
         return d
 
 
@@ -432,6 +478,8 @@ class GraphPanel(QWidget):
     activated = Signal(object)
     changed = Signal()
     isolateRequested = Signal(object)
+    renameRequested = Signal(object)
+    presetRequested = Signal(object)
 
     def __init__(self, panel_id: str, bus: TimeBus, title: str = "Graphs", parent=None):
         super().__init__(parent)
@@ -457,7 +505,11 @@ class GraphPanel(QWidget):
         self.link_btn.toggled.connect(self._on_link_toggled)
         self.follow_btn = QToolButton(text="Follow", checkable=True, checked=True,
                                       toolTip="Scroll the view to keep the cursor visible")
-        fit_btn = QToolButton(text="Fit", toolTip="Show the whole flight")
+        fit_btn = QToolButton(text="Fit", toolTip="Show the whole flight and re-enable automatic Y scaling")
+        self.box_btn = QToolButton(text="Box zoom", checkable=True,
+                                   toolTip="On: drag a rectangle to zoom both axes (wheel stays X-only).\n"
+                                           "Fit or a plot's \u201cAuto Y range\u201d restores automatic Y.")
+        self.box_btn.toggled.connect(self._apply_box_zoom)
         for b, name in ((add_btn, "plus"), (self.link_btn, "link"), (self.follow_btn, "follow"),
                         (fit_btn, "fit")):
             icons.decorate(b, name)
@@ -471,9 +523,17 @@ class GraphPanel(QWidget):
         self.height_box.setMinimumWidth(64)   # letter + padding + drop-down arrow
         self.height_box.setMinimumHeight(26)
         self.height_box.currentTextChanged.connect(lambda _: self._relayout())
-        for w in (add_btn, self.link_btn, self.follow_btn, fit_btn, QLabel("  Height "), self.height_box):
+        for w in (add_btn, self.link_btn, self.follow_btn, fit_btn, self.box_btn, QLabel("  Height "),
+                  self.height_box):
             bar.addWidget(w)
         bar.addStretch(1)
+        more = QToolButton(text="\u22ee", toolTip="Panel: rename, save as preset", popupMode=QToolButton.InstantPopup)
+        more.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+        mm = QMenu(more)
+        mm.addAction("Rename panel\u2026", lambda: self.renameRequested.emit(self))
+        mm.addAction("Save panel as preset\u2026", lambda: self.presetRequested.emit(self))
+        more.setMenu(mm)
+        bar.addWidget(more)
 
         self.view = _PlotView(self)
         self.view.ci.setSpacing(4)
@@ -548,12 +608,15 @@ class GraphPanel(QWidget):
 
     def clear(self):
         for p in self.plots:
+            _clear_highlight(p)
             self.view.ci.removeItem(p.item)
         self.plots = []
         self._relayout()
 
     # --- plots ---
     def _new_plot(self, p: GraphPlot, index: int | None, relayout: bool = True) -> GraphPlot:
+        if self.box_btn.isChecked():
+            p.set_box_zoom(True)
         if p.cursor is not None:
             p.cursor.setValue(self.bus.t)
             p.cursor.sigDragged.connect(lambda line: self.bus.seek(line.value()))
@@ -736,8 +799,22 @@ class GraphPanel(QWidget):
             if self.link_btn.isChecked():
                 self.bus.set_x_range(0.0, self.log.duration, self)
         for p in self.plots:
-            if not p.time_based:
+            if p.time_based:
+                p.auto_y()
+            else:
                 p.vb.autoRange()
+
+    def set_box_zoom(self, on: bool):
+        """The button is the source of truth: setting it applies the mode once (via toggled)."""
+        if self.box_btn.isChecked() != bool(on):
+            self.box_btn.setChecked(bool(on))
+            return
+        self._apply_box_zoom(bool(on))
+
+    def _apply_box_zoom(self, on: bool):
+        for p in self.plots:
+            p.set_box_zoom(on)
+        self.changed.emit()
 
     def visible_range(self) -> tuple[float, float] | None:
         return self._range if self._time_plots() else None
@@ -770,12 +847,16 @@ class GraphPanel(QWidget):
         if ev.button() != Qt.LeftButton or ev.double():
             return
         pos = ev.scenePos()
-        for p in self._time_plots():
-            if p.vb.sceneBoundingRect().contains(pos):
+        for p in self.plots:
+            if p.vb.sceneBoundingRect().contains(pos) or p.legend.sceneBoundingRect().contains(pos):
                 if p.legend.isVisible() and p.legend.sceneBoundingRect().contains(pos):
-                    # a click on the legend only shows / hides a series: not a cursor move
+                    # a click on the legend only shows / hides a series (pyqtgraph does that; save it
+                    # once it has): not a cursor move
+                    QTimer.singleShot(0, p.style_changed)
                     self.activated.emit(self)
                     _highlight(p)
+                    return
+                if not p.time_based:
                     return
                 self.bus.seek(p.vb.mapSceneToView(pos).x())
                 self.activated.emit(self)
@@ -799,6 +880,8 @@ class GraphPanel(QWidget):
                 p.set_title(s["custom_title"])
             if s.get("styles"):
                 p.apply_styles(s["styles"])
+            if s.get("invert_y"):
+                p.set_invert_y(True)
         self._relayout()
         self._apply_range(*rng)
         self.changed.emit()
@@ -813,7 +896,8 @@ class GraphPanel(QWidget):
                  else [p.to_dict() for p in self.plots])
         return {"id": self.panel_id, "title": self.title,
                 "link_x": self.link_btn.isChecked(), "follow": self.follow_btn.isChecked(),
-                "height": self.height_box.currentText(), "plots": plots}
+                "height": self.height_box.currentText(), "plots": plots,
+                **({"box_zoom": True} if self.box_btn.isChecked() else {})}
 
     def load_dict(self, d: dict):
         self.clear()
@@ -821,6 +905,7 @@ class GraphPanel(QWidget):
         self.link_btn.setChecked(d.get("link_x", True))
         self.follow_btn.setChecked(d.get("follow", True))
         self.height_box.setCurrentText(d.get("height", "M"))
+        self.box_btn.setChecked(bool(d.get("box_zoom", False)))
         if self.log is None:
             self._pending = list(d.get("plots", []))
         else:

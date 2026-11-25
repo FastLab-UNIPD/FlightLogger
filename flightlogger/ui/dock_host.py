@@ -51,6 +51,11 @@ class DockHost:
         dw.setFeature(F.DockWidgetFloatable, floatable)
         return dw
 
+    @staticmethod
+    def set_title(dw: CDockWidget, title: str):
+        dw.setWindowTitle(title.upper() if theme.is_themed() else title)
+        dw.toggleViewAction().setText(title)
+
     def add(self, dw: CDockWidget, area, target=None):
         """target: a CDockAreaWidget to split/tab against (None = outer edge)."""
         if target is not None:
