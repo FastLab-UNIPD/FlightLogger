@@ -32,6 +32,7 @@ class Note:
     general: bool = False               # untimed note about the whole flight
     custom_color: str | None = None     # overrides the category color when set
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    set: str = ""                       # note set (group) name; "" = no set
 
     @property
     def color(self) -> str:
@@ -48,7 +49,8 @@ class Note:
                    t_end=None if t_end is None else float(t_end),
                    general=bool(d.get("general", False)),
                    custom_color=d.get("custom_color") or None,
-                   id=str(d.get("id") or uuid.uuid4().hex[:12]))
+                   id=str(d.get("id") or uuid.uuid4().hex[:12]),
+                   set=str(d.get("set") or ""))
 
 
 class NotesModel(QObject):

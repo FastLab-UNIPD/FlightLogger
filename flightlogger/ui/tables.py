@@ -1,8 +1,8 @@
 """Logged messages and parameters tables (Flight Review shows both below the graphs)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QHBoxLayout, QHeaderView, QLineEdit,
                                QListWidget, QListWidgetItem, QSplitter, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
@@ -16,6 +16,22 @@ LEVEL_COLORS = {"WARNING": QColor(255, 236, 200), "ERROR": QColor(255, 210, 210)
                 "CRITICAL": QColor(255, 190, 190), "ALERT": QColor(255, 190, 190),
                 "EMERGENCY": QColor(255, 170, 170)}
 RED = QColor("#d55e00")  # Flight Review: non-airframe-default values in red
+
+
+class CopyKeyFilter(QObject):
+    """Ctrl+C in a table: a key filter, not a QAction (every shortcut action is made app-wide, and
+    two of them with the same keys cancel each other)."""
+
+    def __init__(self, table, callback):
+        super().__init__(table)
+        self.callback = callback
+        table.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.KeyPress and ev.matches(QKeySequence.Copy):
+            self.callback()
+            return True
+        return False
 
 
 def _table(headers) -> QTableWidget:
@@ -38,10 +54,32 @@ class MessagesTable(QWidget):
         self.table = _table(["Time", "Level", "Message"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.cellClicked.connect(self._on_click)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        self._copy_filter = CopyKeyFilter(self.table, self.copy_selected)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.table)
+
+    def copy_selected(self):
+        """Selected rows as tab-separated text: time, level, message."""
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        lines = ["\t".join(self.table.item(r, c).text() for c in range(3)) for r in rows
+                 if self.table.item(r, 0) is not None]
+        if lines:
+            QGuiApplication.clipboard().setText("\n".join(lines))
+
+    def _context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        if row not in {i.row() for i in self.table.selectedIndexes()}:
+            self.table.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction("Copy", self.copy_selected)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def set_log(self, log: FlightLog | None):
         msgs = log.messages() if log else []
