@@ -117,6 +117,8 @@ class GraphPlot:
         self.series_items: list = []          # (name, PlotDataItem) of a Flight Review graph
         self.styles: dict[str, dict] = {}     # user edits, by series name -> look
         self.curves: dict[str, pg.PlotDataItem] = {}
+        self._full: dict = {}                 # time-based item -> (t, y), whole flight (for the trim)
+        self._trim = None
         self.mode_items: list = []
         self.note_items: list = []
         self._note_map: dict = {}   # note id -> ((t, t_end, color), item)
@@ -147,6 +149,8 @@ class GraphPlot:
                                        stepMode="left" if s.step else None,
                                        name=s.label or None)
             pi.addItem(_cache(item))
+            if self.time_based:
+                self._full[item] = (s.t, s.y)
             self.series_items.append((s.label or f"Series {len(self.series_items) + 1}", item))
             self._n_legend += bool(s.label)
         if g.spectrogram is not None:
@@ -214,6 +218,9 @@ class GraphPlot:
                                name=SignalKey.parse(key).label)
         _cache(curve)
         self.curves[key] = curve
+        self._full[curve] = (t, y)
+        if self._trim:
+            self._slice(curve, *self._trim)
         self.signals.append(key)
         self._n_legend += 1
         self._update_legend()
@@ -222,10 +229,33 @@ class GraphPlot:
     def remove_signal(self, key: str):
         curve = self.curves.pop(key, None)
         if curve is not None:
+            self._full.pop(curve, None)
             self.item.removeItem(curve)
             self.signals.remove(key)
             self._n_legend -= 1
             self._update_legend()
+
+    # --- hidden time range ---
+    def _slice(self, item, t0: float, t1: float):
+        t, y = self._full[item]
+        i0 = int(np.searchsorted(t, t0, "left"))
+        i1 = int(np.searchsorted(t, t1, "right"))
+        item.setData(t[i0:i1], y[i0:i1])
+
+    def set_trim(self, trim):
+        """Show only data inside trim = (t0, t1) (None: the whole flight). Full arrays are kept;
+        outside data is neither drawn nor used by the Y autoscale. Non-time plots are unchanged."""
+        if not self.time_based or trim == self._trim:
+            return
+        self._trim = trim
+        if trim:
+            self.vb.setLimits(xMin=trim[0], xMax=trim[1])
+            for item in self._full:
+                self._slice(item, *trim)
+        else:
+            self.vb.setLimits(xMin=None, xMax=None)
+            for item, (t, y) in self._full.items():
+                item.setData(t, y)
 
     def _update_legend(self):
         self.legend.setColumnCount(2 if self._n_legend > 4 else 1)
@@ -560,6 +590,7 @@ class GraphPanel(QWidget):
 
         bus.timeChanged.connect(self._on_time)
         bus.xRangeChanged.connect(self._on_bus_range)
+        bus.trimChanged.connect(self._on_trim)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -622,6 +653,8 @@ class GraphPanel(QWidget):
             p.cursor.setValue(self.bus.t)
             p.cursor.sigDragged.connect(lambda line: self.bus.seek(line.value()))
             p.vb.sigXRangeChanged.connect(self._on_plot_range)
+        if self.bus.trim:
+            p.set_trim(self.bus.trim)
         if self.log is not None:
             p.set_modes(self.log.mode_segments())
             if "replay" not in self.log.info:
@@ -730,7 +763,33 @@ class GraphPanel(QWidget):
             return self.bus.x_range
         if self._range is not None:
             return self._range
+        return self._full_range()
+
+    def _full_range(self) -> tuple[float, float]:
+        """The time span plots may show: the trim, else the whole flight."""
+        if self.bus.trim:
+            return self.bus.trim
         return (0.0, self.log.duration if self.log else 1.0)
+
+    def _on_trim(self, trim):
+        """Re-slice every time-based curve once (never per frame), then realign the view."""
+        tp = self._time_plots()
+        if not tp:
+            return
+        self._syncing = True
+        try:
+            for p in tp:
+                p.set_trim(trim)
+        finally:
+            self._syncing = False
+        if trim:
+            x0, x1 = self._range or (trim[0], trim[1])
+            x0, x1 = max(x0, trim[0]), min(x1, trim[1])
+            if x1 <= x0:
+                x0, x1 = trim
+        else:
+            x0, x1 = self._current_range()
+        self._apply_range(x0, x1)
 
     def _visible_plots(self) -> list[GraphPlot]:
         top = self.scroll.verticalScrollBar().value()
@@ -796,9 +855,10 @@ class GraphPanel(QWidget):
 
     def fit_all(self):
         if self.log:
-            self._apply_range(0.0, self.log.duration)
+            lo, hi = self._full_range()
+            self._apply_range(lo, hi)
             if self.link_btn.isChecked():
-                self.bus.set_x_range(0.0, self.log.duration, self)
+                self.bus.set_x_range(lo, hi, self)
         for p in self.plots:
             if p.time_based:
                 p.auto_y()
@@ -830,6 +890,8 @@ class GraphPanel(QWidget):
         if t < x0 or t > x1:
             w = x1 - x0
             n0 = t - FOLLOW_LEAD * w
+            if self.bus.trim:   # page inside the visible part of the flight
+                n0 = min(max(n0, self.bus.trim[0]), max(self.bus.trim[0], self.bus.trim[1] - w))
             self._apply_range(n0, n0 + w)
             if self.link_btn.isChecked():
                 self.bus.set_x_range(n0, n0 + w, self)

@@ -57,6 +57,26 @@ class TimelineWidget(pg.PlotWidget):
         self.scene().sigMouseMoved.connect(self._on_hover)
         bus.timeChanged.connect(self.cursor.setValue)
         bus.xRangeChanged.connect(self._on_bus_range)
+        bus.trimChanged.connect(self._on_trim)
+        self._trim_items: list = []
+
+    def _on_trim(self, trim):
+        """Hidden parts: grey shading; the blue region cannot leave the visible part."""
+        pi = self.getPlotItem()
+        for it in self._trim_items:
+            pi.removeItem(it)
+        self._trim_items = []
+        self.region.setBounds(trim if trim else (None, None))
+        if not trim:
+            return
+        dur = max(self.bus.duration, trim[1])
+        grey = pg.mkBrush(200, 200, 200, 80) if theme.is_dark() else pg.mkBrush(90, 90, 90, 100)
+        for a, b in ((0.0, trim[0]), (trim[1], dur)):
+            if b - a > 0:
+                r = pg.LinearRegionItem((a, b), movable=False, brush=grey, pen=pg.mkPen(None))
+                r.setZValue(8)
+                pi.addItem(r, ignoreBounds=True)
+                self._trim_items.append(r)
 
     def set_log(self, log: FlightLog | None):
         pi = self.getPlotItem()
@@ -65,6 +85,7 @@ class TimelineWidget(pg.PlotWidget):
         self._static = []
         self._layers = {"modes": [], "events": []}
         self._modes = []
+        self._on_trim(self.bus.trim if log is not None else None)
         if log is None:
             return
         dur = max(log.duration, 1e-3)
@@ -226,6 +247,9 @@ class TimelineWidget(pg.PlotWidget):
         if not self._updating:
             x0, x1 = self.region.getRegion()
             self.bus.set_x_range(x0, x1, self)
+            if self.bus.x_range and (abs(self.bus.x_range[0] - x0) > 1e-9
+                                     or abs(self.bus.x_range[1] - x1) > 1e-9):
+                self._set_region(*self.bus.x_range)   # the bus clamped it to the trim
 
     def _on_bus_range(self, x0, x1, source):
         if source is not self:
