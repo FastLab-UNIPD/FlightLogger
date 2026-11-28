@@ -1,4 +1,4 @@
-"""The comparison window: logs list, parameter comparison and (next step) comparison plot panels."""
+"""The comparison window: logs list, parameter comparison and comparison plot panels."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QProcess, QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QDoubleSpinBox, QFileDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget,
+                               QInputDialog, QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget,
                                QToolBar, QVBoxLayout, QWidget)
 
 from ..project import (COMPARE_EXT, LastDirs, RecentComparisons, RecentProjects, Settings, b64,
@@ -16,6 +16,7 @@ from ..project import (COMPARE_EXT, LastDirs, RecentComparisons, RecentProjects,
 from ..ui import dock_host as dh
 from ..ui import icons, theme
 from .logs import MAX_ACTIVE, LogEntry, LogSet
+from .panel import ComparePanel
 from .params import ParamsCompare
 
 _COLS = ["Show", "Color", "Name", "Offset (s)", "Takeoff (s)", ""]
@@ -40,6 +41,7 @@ class LogsPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(2, self.table.horizontalHeader().ResizeMode.Stretch)
+        self.table.horizontalHeader().setMinimumSectionSize(40)
         self.import_btn = QPushButton(icons.icon("plus"), "Import logs…")
         self.import_btn.clicked.connect(window.import_logs_dialog)
         self.hint = QLabel(f"At most {MAX_ACTIVE} logs are shown at once. Logs are aligned at takeoff; "
@@ -84,6 +86,7 @@ class LogsPanel(QWidget):
             t.setCellWidget(r, 2, name)
             spin = QDoubleSpinBox()
             spin.setRange(-100000.0, 100000.0)
+            spin.setFixedWidth(78)
             spin.setDecimals(2)
             spin.setSingleStep(0.5)
             spin.setValue(e.offset_s)
@@ -109,6 +112,12 @@ class LogsPanel(QWidget):
             self.checks[r], self.spins[r], self.names[r] = chk, spin, name
         for c in (0, 1, 3, 4, 5):
             t.resizeColumnToContents(c)
+        t.setMinimumWidth(self._min_table_width())
+
+    def _min_table_width(self) -> int:
+        """Name gets at least 150 px next to the compact columns."""
+        t = self.table
+        return sum(t.columnWidth(c) for c in (0, 1, 3, 4, 5)) + 150 + 24
 
     @staticmethod
     def _centered(w) -> QWidget:
@@ -146,32 +155,22 @@ class CompareWindow(QMainWindow):
         self.recent = RecentComparisons()
         self.path: Path | None = None
         self.logset = LogSet(self)
-        self.panels: list[QWidget] = []          # comparison panels (filled by the next step)
-        self._panel_dicts: list[dict] = []       # saved panels waiting to be rebuilt
-        self.pan_together = True
+        self.panels: list[ComparePanel] = []     # comparison panels
+        self._panel_docks: dict[str, object] = {}   # panel id -> its dock widget
+        self._panel_seq = 0
+        self._panel_dicts: list[dict] = []       # kept for the base hook (panels are rebuilt at once)
+        self._default_done = False               # the first logs of a comparison get a default panel
+        self.pan_together = False
         self._restart_args: list[str] | None = None
         self._saved_snapshot = self._snapshot()
 
         self.docks = dh.DockHost(self)
         self.logs_panel = LogsPanel(self.logset, self)
         self.params = ParamsCompare(self.logset)
-        self.panel_host = QWidget()
-        self._panel_lay = QVBoxLayout(self.panel_host)
-        self._panel_lay.setContentsMargins(4, 4, 4, 4)
-        self.panel_hint = QLabel("Comparison panels come in the next step")
-        self.panel_hint.setAlignment(Qt.AlignCenter)
-        theme.style_role(self.panel_hint, "dim")
-        self._panel_lay.addWidget(self.panel_hint)
-
-        self.center_dw = self.docks.make(self.panel_host, "Comparison", "comparison", floatable=False)
         self.logs_dw = self.docks.make(self.logs_panel, "Logs", "logs")
         self.params_dw = self.docks.make(self.params, "Parameters", "parameters")
-        center = self.docks.add(self.center_dw, dh.CENTER)
-        logs_area = self.docks.add(self.logs_dw, dh.TOP)
-        self.docks.add(self.params_dw, dh.BOTTOM)
-        self.docks.mgr.setSplitterSizes(logs_area, [220, 480])
         self._fixed_docks = [self.logs_dw, self.params_dw]
-        self._default_state = self.docks.mgr.saveState()
+        self._arrange_default()
 
         self.status = QLabel("Import logs (Ctrl+I) to compare them")
         self.statusBar().addWidget(self.status, 1)
@@ -180,6 +179,7 @@ class CompareWindow(QMainWindow):
         self._update_title()
         self.logset.failed.connect(lambda e, err: self.notify(f"{e.name}: {err}", warn=True))
         self.logset.changed.connect(self._update_title)
+        self.logset.loaded.connect(self._maybe_default_panel)
 
     # --- state ---
     def _snapshot(self) -> str:
@@ -209,18 +209,152 @@ class CompareWindow(QMainWindow):
         if self.interactive:
             (QMessageBox.warning if warn else QMessageBox.information)(self, "Comparison", text)
 
-    # --- panels hook for the next step ---
+    # --- comparison panels ---
+    def _arrange_default(self):
+        """Logs on top of Parameters on the left; the comparison panels fill the rest."""
+        mgr = self.docks.mgr
+        docked = [(p, self._panel_docks[p.panel_id]) for p in self.panels]
+        for dw in [self.logs_dw, self.params_dw] + [d for _p, d in docked]:
+            if dw.dockContainer() is not None:
+                mgr.removeDockWidget(dw)
+        logs_area = self.docks.add(self.logs_dw, dh.LEFT)
+        self.docks.add(self.params_dw, dh.BOTTOM, logs_area)
+        mgr.setSplitterSizes(logs_area, [200, 500])
+        self.logs_dw.toggleView(True)
+        self.params_dw.toggleView(True)
+        first = None
+        for _p, dw in docked:
+            if first is None:
+                first = self.docks.add(dw, dh.RIGHT)
+            else:
+                self.docks.add(dw, dh.RIGHT, first)
+            dw.toggleView(True)
+        self._size_columns(first)
+
+    def _size_columns(self, panel_area):
+        if panel_area is not None:
+            total = max(self.docks.mgr.width(), 1000)
+            left = min(620, int(total * 0.38))
+            self.docks.mgr.setSplitterSizes(panel_area, [left, total - left])
+
+    def new_panel(self, title: str | None = None, specs: list[dict] | None = None, pid: str | None = None,
+                  data: dict | None = None) -> ComparePanel:
+        """Add a comparison panel next to the first docked one (data: a saved panel dict)."""
+        if pid is None:
+            self._panel_seq += 1
+            pid = f"cmp_{self._panel_seq}"
+        else:
+            num = pid.rsplit("_", 1)[-1]
+            if num.isdigit():
+                self._panel_seq = max(self._panel_seq, int(num))
+        title = title or self._unique_title("Comparison")
+        panel = ComparePanel(self.logset, pid, title, self.pan_together)
+        panel.changed.connect(self._update_title)
+        panel.renameRequested.connect(self.rename_panel_dialog)
+        panel.removeRequested.connect(self.remove_panel)
+        panel.panTogetherToggled.connect(self._set_pan_together)
+        if data is not None:
+            panel.load_dict(data)
+        elif specs:
+            panel.add_specs(specs)
+        self.add_panel(panel)
+        return panel
+
+    def _unique_title(self, base: str) -> str:
+        used = {p.title for p in self.panels}
+        title, n = base, 1
+        while title in used:
+            n += 1
+            title = f"{base} {n}"
+        return title
+
     def add_panel(self, widget: QWidget):
-        """Add a comparison panel to the central area (it should offer to_dict() for saving)."""
-        self.panel_hint.hide()
-        self._panel_lay.addWidget(widget, 1)
+        """Dock a comparison panel in the central area (it offers to_dict() for saving)."""
+        pid = getattr(widget, "panel_id", None) or f"cmp_{len(self.panels) + 1}"
+        dw = self.docks.make(widget, getattr(widget, "title", "Comparison"), pid)
+        dw.closed.connect(lambda w=widget: self._on_dock_closed(w))
+        anchor = next((p for p in self.panels if not self._panel_docks[p.panel_id].isClosed()
+                       and not self._panel_docks[p.panel_id].isFloating()), None)
+        if anchor is not None:
+            self.docks.add(dw, dh.RIGHT, self._panel_docks[anchor.panel_id].dockAreaWidget())
+        else:
+            area = self.docks.add(dw, dh.RIGHT)
+            self._size_columns(area)
+        self._panel_docks[pid] = dw
         self.panels.append(widget)
         self._update_title()
 
+    def _on_dock_closed(self, widget):
+        if widget in self.panels:
+            self.remove_panel(widget, confirm=False)
+
+    def remove_panel(self, panel: ComparePanel, confirm: bool = True) -> bool:
+        if panel not in self.panels:
+            return False
+        if confirm and self.interactive and panel.specs and QMessageBox.question(
+                self, "Remove panel", f"Remove \u201c{panel.title}\u201d and its {len(panel.specs)} graph(s)?"
+        ) != QMessageBox.Yes:
+            return False
+        self.panels.remove(panel)
+        dw = self._panel_docks.pop(panel.panel_id, None)
+        panel.dispose()
+        if dw is not None:
+            self.docks.mgr.removeDockWidget(dw)
+            panel.hide()
+            panel.setParent(None)
+            dw.deleteLater()
+        self._update_title()
+        return True
+
+    def rename_panel(self, panel: ComparePanel, title: str) -> bool:
+        title = title.strip()
+        if not title or title == panel.title:
+            return False
+        panel.title = title
+        dw = self._panel_docks.get(panel.panel_id)
+        if dw is not None:
+            self.docks.set_title(dw, title)
+        self._update_title()
+        return True
+
+    def rename_panel_dialog(self, panel: ComparePanel):
+        if not self.interactive:
+            return
+        title, ok = QInputDialog.getText(self, "Rename panel", "Panel name:", text=panel.title)
+        if ok:
+            self.rename_panel(panel, title)
+
+    def new_panel_action(self):
+        return self.new_panel()
+
+    def _maybe_default_panel(self, _entry=None):
+        """The first logs of a new comparison: show the roll / pitch / yaw angles right away."""
+        if self.panels or self._default_done:
+            return
+        self._default_done = True
+        from .panel import _builtin_presets
+        self.new_panel("Angles", specs=[{"graph": g} for g in _builtin_presets().get(
+            "Angles", ["roll_angle", "pitch_angle", "yaw_angle"])])
+
+    def _set_pan_together(self, on: bool):
+        self.pan_together = bool(on)
+        if self.pan_act.isChecked() != self.pan_together:
+            self.pan_act.blockSignals(True)
+            self.pan_act.setChecked(self.pan_together)
+            self.pan_act.blockSignals(False)
+        for p in self.panels:
+            p.set_pan_together(self.pan_together)
+        self._update_title()
+
     def load_panels(self, dicts: list[dict]):
-        """Hook: called with the saved panel dicts when a comparison is opened. The base keeps them
-        (so saving again does not lose them); the panel step rebuilds the widgets."""
-        self._panel_dicts = list(dicts or [])
+        """Rebuild the panels of a saved comparison (the current ones are removed first)."""
+        for p in list(self.panels):
+            self.remove_panel(p, confirm=False)
+        self._panel_dicts = []
+        self._default_done = True
+        for d in dicts or []:
+            if isinstance(d, dict):
+                self.new_panel(d.get("title"), pid=d.get("id"), data=d)
 
     # --- toolbar / menus ---
     def _build_toolbar(self):
@@ -239,6 +373,8 @@ class CompareWindow(QMainWindow):
         act("log", "Import logs", "Add logs to compare (Ctrl+I)", self.import_logs_dialog)
         act("folder", "Open", "Open a comparison file (Ctrl+O)", self.open_comparison_dialog)
         act("save", "Save", "Save the comparison (Ctrl+S)", lambda: self.save())
+        tb.addSeparator()
+        act("graph", "New comparison panel", "Add a comparison plot panel (Ctrl+G)", self.new_panel_action)
         tb.addSeparator()
         act("compare", "Back to analysis", "Close the comparison and return to the analysis window",
             self.back_to_analysis)
@@ -261,8 +397,10 @@ class CompareWindow(QMainWindow):
         m.addAction(QAction("&Quit", self, shortcut=QKeySequence.Quit, triggered=self.close))
 
         v = self.menuBar().addMenu("&View")
-        pan = QAction("Pan and zoom plots &together", self, checkable=True, checked=self.pan_together)
-        pan.toggled.connect(lambda on: setattr(self, "pan_together", bool(on)))
+        v.addAction(QAction(icons.icon("graph"), "&New comparison panel", self, shortcut="Ctrl+G",
+                            triggered=self.new_panel_action))
+        pan = QAction("&Pan all logs together", self, checkable=True, checked=self.pan_together)
+        pan.toggled.connect(self._set_pan_together)
         v.addAction(pan)
         self.pan_act = pan
         theme_menu = v.addMenu("&Theme")
@@ -290,7 +428,7 @@ class CompareWindow(QMainWindow):
                 a.setShortcutContext(Qt.ApplicationShortcut)
 
     def reset_layout(self):
-        self.docks.mgr.restoreState(self._default_state)
+        self._arrange_default()
 
     def show_about(self):
         from .. import IS_DEV, __version__
@@ -331,8 +469,10 @@ class CompareWindow(QMainWindow):
         if not self._maybe_save():
             return
         self.logset.clear()
-        self.panels.clear()
+        for p in list(self.panels):
+            self.remove_panel(p, confirm=False)
         self._panel_dicts = []
+        self._default_done = False
         self.path = None
         self._saved_snapshot = self._snapshot()
         self._update_title()
@@ -355,8 +495,7 @@ class CompareWindow(QMainWindow):
             return False
         self.path = Path(path)
         self.logset.load_dict(data.get("logs") or [])
-        self.pan_together = bool(data.get("pan_together", True))
-        self.pan_act.setChecked(self.pan_together)
+        self._set_pan_together(bool(data.get("pan_together", False)))
         self.load_panels(data.get("panels") or [])
         try:
             if data.get("dock_state"):
