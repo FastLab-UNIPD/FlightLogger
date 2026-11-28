@@ -730,6 +730,8 @@ class MainWindow(QMainWindow):
         aact("film", "Open video", "Open a video (Ctrl+Shift+O)", self.open_video_dialog)
         aact("folder", "Open project", "Open a project file (Ctrl+Shift+P)", self.open_project_dialog)
         aact("save", "Save", "Save the project (Ctrl+S)", lambda: self.save_project())
+        aact("compare", "Compare logs", "Compare logs in a separate, lighter window (closes this "
+             "analysis window, asking to save first)", self.switch_to_compare)
         ab.addSeparator()
         self.undo_act = aact("undo", "Undo", "Undo the last change to notes or plots (Ctrl+Z)", self.undo)
         self.redo_act = aact("redo", "Redo", "Redo (Ctrl+Shift+Z or Ctrl+Y)", self.redo)
@@ -825,6 +827,7 @@ class MainWindow(QMainWindow):
                             triggered=lambda: self.save_project()))
         m.addAction(QAction("Save project &as…", self, shortcut="Ctrl+Shift+S",
                             triggered=lambda: self.save_project(ask=True)))
+        m.addAction(QAction(icons.icon("compare"), "Compare &logs…", self, triggered=self.switch_to_compare))
         m.addAction(QAction("Export &shareable project…", self, triggered=self.export_shareable_dialog))
         m.addAction(QAction("&Export notes as text…", self, triggered=self.export_notes_dialog))
         m.addAction(QAction("Export &video with overlay…", self, triggered=self.export_video_dialog))
@@ -1637,6 +1640,17 @@ class MainWindow(QMainWindow):
                                    str(Path(__file__).resolve().parents[1]))
         else:
             self.settings.set("theme", previous)
+
+    def switch_to_compare(self):
+        """Close the analysis window (asking to save) and restart into the comparison environment."""
+        if not self._maybe_save():
+            return
+        self._restart_args = ["--compare"]
+        if self.interactive:
+            self._dirty = False   # already answered: closing must not ask again
+            if self.close():
+                QProcess.startDetached(sys.executable, ["-m", "flightlogger", *self._restart_args],
+                                       str(Path(__file__).resolve().parents[1]))
 
     def _set_previews(self, on: bool):
         self.timeline.previews = on

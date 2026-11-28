@@ -88,7 +88,7 @@ class GraphDef:
     y_range: tuple[float, float] | None = None
     y_start: float | None = None
     hbands: list[tuple[float | None, float | None, str]] = field(default_factory=list)
-    hlines: list[tuple[float, str]] = field(default_factory=list)
+    hlines: list[tuple] = field(default_factory=list)   # (y, color) or (y, color, 'faint')
     vmarks: list[tuple[float, str]] = field(default_factory=list)   # FFT frequency marks
     nan_times: list[float] = field(default_factory=list)
     dropouts: list[tuple[float, float, float, float]] = field(default_factory=list)
@@ -604,6 +604,15 @@ def build_graphs(fl: FlightLog) -> list[GraphDef]:
         p.add_graph(manual_control_sp_controls + ['aux1', 'aux2'], colors8[0:6],
                     ['Y / Roll', 'X / Pitch', 'Yaw', 'Throttle ' + manual_control_sp_throttle_range,
                      'Aux1', 'Aux2'])
+        # Throttle-stick deadzone (MPC_HOLD_DZ, per log): PX4 applies it to the stick in [-1, 1]
+        # around 0; in the [0, 1] representation the centre is 0.5 and the half-width dz / 2.
+        dz = float(params.get('MPC_HOLD_DZ', 0) or 0)
+        if dz > 0 and p.dataset is not None:
+            c0, hw = (0.0, dz) if manual_control_sp_throttle_range == '[-1, 1]' else (0.5, dz / 2)
+            p.g.hlines += [(c0 - hw, colors8[3], 'faint'), (c0 + hw, colors8[3], 'faint')]
+            for s_ in p.g.series:
+                if s_.label.startswith('Throttle'):
+                    s_.label += f' (deadzone \u00b1{dz:.2f})'
         p.change_dataset(manual_control_switches_topic)
         p.add_graph([lambda d: ('mode_slot', d['mode_slot'] / 6),
                      lambda d: ('kill_switch', d['kill_switch'] == 1)],

@@ -114,6 +114,29 @@ def _param_group(name: str) -> str:
     return g or (name.split("_", 1)[0] if "_" in name else "Other")
 
 
+def fill_group_list(lst: QListWidget, total: int, counts: dict, n_changed: int | None,
+                    changed_label: str = "Changed from default"):
+    """Fill a parameter group list: All, <changed> (if n_changed is not None), then groups A-Z.
+    Keeps the selected key; signals are blocked (the caller refilters)."""
+    prev = lst.currentItem()
+    prev_key = prev.data(Qt.UserRole) if prev else _ALL
+    lst.blockSignals(True)
+    lst.clear()
+    entries = [(f"All ({total})", _ALL)]
+    if n_changed is not None:
+        entries.append((f"{changed_label} ({n_changed})", _CHANGED))
+    entries += [(f"{g} ({n})", g) for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
+    sel = 0
+    for i, (label, key) in enumerate(entries):
+        it = QListWidgetItem(label)
+        it.setData(Qt.UserRole, key)
+        lst.addItem(it)
+        if key == prev_key:
+            sel = i
+    lst.setCurrentRow(sel)
+    lst.blockSignals(False)
+
+
 class ParamsTable(QWidget):
     _splitter_sizes: list | None = None     # remembered in-session only
 
@@ -187,24 +210,7 @@ class ParamsTable(QWidget):
 
     def _fill_groups(self, total: int, counts: dict, n_changed: int | None):
         """Group list: All, Changed from default (if defaults exist), then groups A-Z."""
-        prev = self.group_list.currentItem()
-        prev_key = prev.data(Qt.UserRole) if prev else _ALL
-        lst = self.group_list
-        lst.blockSignals(True)
-        lst.clear()
-        entries = [(f"All ({total})", _ALL)]
-        if n_changed is not None:
-            entries.append((f"Changed from default ({n_changed})", _CHANGED))
-        entries += [(f"{g} ({n})", g) for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
-        sel = 0
-        for i, (label, key) in enumerate(entries):
-            it = QListWidgetItem(label)
-            it.setData(Qt.UserRole, key)
-            lst.addItem(it)
-            if key == prev_key:
-                sel = i
-        lst.setCurrentRow(sel)
-        lst.blockSignals(False)
+        fill_group_list(self.group_list, total, counts, n_changed)
         self._apply_filter()
 
     def select_group(self, key: str) -> bool:
