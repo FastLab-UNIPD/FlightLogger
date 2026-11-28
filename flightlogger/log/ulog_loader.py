@@ -131,6 +131,7 @@ class FlightLog:
         self.duration = self._robust_duration()
         self._graphs = None
         self._track = False
+        self._takeoff: float | None = None
 
     # --- Flight Review graphs (computed once, on first use) ---
     @property
@@ -271,6 +272,29 @@ class FlightLog:
                 ev.append(LogEvent(float(t[i]), "landed" if landed[i] else "takeoff",
                                    "Landed" if landed[i] else "Takeoff"))
         return sorted(ev, key=lambda e: e.t)
+
+    def takeoff_time(self) -> float:
+        """Seconds (log time base of ``get``) of the first landed -> airborne transition;
+        else the first arming; else 0.0. Cached."""
+        if self._takeoff is not None:
+            return self._takeoff
+        res = None
+        try:
+            if self.has_signal("vehicle_land_detected:0/landed"):
+                t, l = self.get("vehicle_land_detected:0/landed")
+                landed = l > 0.5
+                idx = np.flatnonzero(landed[:-1] & ~landed[1:])
+                if len(idx):
+                    res = float(t[idx[0] + 1])
+            if res is None and self.has_signal("vehicle_status:0/arming_state"):
+                t, a = self.get("vehicle_status:0/arming_state")
+                idx = np.flatnonzero(a == ARMING_STATE_ARMED)
+                if len(idx):
+                    res = float(t[idx[0]])
+        except (KeyError, ValueError):
+            res = None
+        self._takeoff = 0.0 if res is None else res
+        return self._takeoff
 
     def messages(self) -> list[LogMessage]:
         # PX4 appends a tab to messages that are duplicated as (undecoded) events
