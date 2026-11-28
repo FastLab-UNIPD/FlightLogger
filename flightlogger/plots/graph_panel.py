@@ -181,10 +181,11 @@ class GraphPlot:
                                     pen=pg.mkPen(None))
             r.setZValue(-90)
             pi.addItem(_cache(r), ignoreBounds=True)
-        for y, color in g.hlines:
-            c = pg.mkColor(color)
-            c.setAlpha(128)
-            pi.addItem(pg.InfiniteLine(y, angle=0, pen=pg.mkPen(c, width=1)), ignoreBounds=True)
+        for y, color, *faint in g.hlines:   # optional 3rd item: faint dotted style
+            c = pg.mkColor(theme.plot_color(color))
+            c.setAlpha(70 if faint else 128)
+            pen = pg.mkPen(c, width=1, style=Qt.DotLine if faint else Qt.SolidLine)
+            pi.addItem(pg.InfiniteLine(y, angle=0, pen=pen), ignoreBounds=True)
         for f, label in g.vmarks:
             ink = theme.plot_color("k")
             pi.addItem(pg.InfiniteLine(f, angle=90, pen=pg.mkPen(ink, width=1), label=" " + label,
