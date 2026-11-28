@@ -116,6 +116,9 @@ class _KeyFilter(QObject):
         if isinstance(fw, self.TEXT_WIDGETS):
             return False
         key, mods = ev.key(), ev.modifiers()
+        if mods == Qt.ControlModifier and key in (Qt.Key_C, Qt.Key_V):
+            # plot lines: Ctrl+C / Ctrl+V on the framed plot, never when a table (its own copy) or text has focus
+            return not isinstance(fw, QAbstractItemView) and self.win.plot_line_key(key == Qt.Key_C)
         arrows = key in (Qt.Key_Left, Qt.Key_Right)
         if arrows and isinstance(fw, QAbstractItemView):
             return False  # keep arrow navigation in trees/tables
@@ -775,6 +778,24 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Click a plot first, then press Edit plot", 4000)
             return
         plot.edit()
+
+    def plot_line_key(self, copy: bool) -> bool:
+        """Ctrl+C / Ctrl+V with a plot framed: copy one of its lines / paste the copied line onto it.
+        False (key not used) when no plot is framed."""
+        import shiboken6
+        from .plots.graph_panel import highlighted_plot
+        plot = highlighted_plot()
+        if plot is None or not shiboken6.isValid(plot.item):
+            return False
+        if copy:
+            ref = plot.copy_via_menu()
+            if ref is None:
+                return False
+            from .plots.line_refs import ref_label
+            self.statusBar().showMessage(f"Copied line {ref_label(ref)}: Ctrl+V on another plot", 4000)
+        else:
+            plot.paste_via_menu()
+        return True
 
     def _on_speed(self, s: float):
         i = self.speed_box.findData(s)

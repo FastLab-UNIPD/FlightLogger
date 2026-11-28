@@ -8,6 +8,7 @@ from ..log.fr_graphs import flight_modes_table
 
 MIME_SIGNALS = "application/x-flightlogger-signals"
 MIME_GRAPHS = "application/x-flightlogger-graphs"
+MIME_LINE = "application/x-flightlogger-line"      # JSON line reference (a legend entry being dragged)
 
 CURSOR_COLOR = "#ff0000"
 # Custom-signal palette: Flight Review's colors8 (black moved to the end)

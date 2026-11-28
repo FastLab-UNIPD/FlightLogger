@@ -132,7 +132,7 @@ def export_light(plot, path: str, width: int = 1600) -> None:
     try:
         for it, st in saved:
             apply_series_state(it, dict(st, color=_lighten(QColor(st["color"])).name()))
-        for name in ("left", "bottom"):
+        for name in (("left", "bottom") + (("right",) if plot.right is not None else ())):
             ax = pi.getAxis(name)
             ax.setPen(black)
             ax.setTextPen(black)
@@ -154,7 +154,7 @@ def export_light(plot, path: str, width: int = 1600) -> None:
         for it, st in saved:
             apply_series_state(it, st)
         fg = pg.mkPen(theme.PLOT_FG)
-        for name in ("left", "bottom"):
+        for name in (("left", "bottom") + (("right",) if plot.right is not None else ())):
             ax = pi.getAxis(name)
             ax.setPen(fg)
             ax.setTextPen(fg)

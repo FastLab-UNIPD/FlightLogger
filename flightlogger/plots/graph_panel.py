@@ -8,21 +8,24 @@ the TimeBus. FFT plots have a frequency axis and stay independent.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import shiboken6
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QMenu, QScrollArea,
+from PySide6.QtCore import QEvent, QMimeData, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor, QDrag, QMouseEvent
+from PySide6.QtWidgets import (QApplication, QComboBox, QGraphicsItem, QGraphicsRectItem, QHBoxLayout, QLabel, QMenu, QScrollArea,
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..log.fr_graphs import GraphDef
 from ..log.ulog_loader import FlightLog, SignalKey
 from ..timebus import TimeBus
 from ..ui import icons, theme
+from . import line_refs
 from .plot_edit import apply_series_state, series_state
-from .common import (CURSOR_COLOR, show_preview_at, MIME_GRAPHS, MIME_SIGNALS, PALETTE, TimeAxis, fmt_time,
+from .common import (CURSOR_COLOR, show_preview_at, MIME_GRAPHS, MIME_LINE, MIME_SIGNALS, PALETTE, TimeAxis, fmt_time,
                      message_color, mode_color)
 
 _highlighted = None
@@ -76,6 +79,62 @@ class _XWheelViewBox(pg.ViewBox):
         super().wheelEvent(ev, 0 if axis is None else axis)
 
 
+def _pick(options: list, pos=None):
+    """Small pop-up menu: options = [(text, value)]; the chosen value or None. Tests replace this."""
+    menu = QMenu()
+    acts = {menu.addAction(text): value for text, value in options}
+    chosen = menu.exec(pos or QCursor.pos())
+    return acts.get(chosen)
+
+
+class _DragLegend(pg.LegendItem):
+    """Legend whose entries can be dragged onto another plot (copies that line there). Dragging
+    inside the plot still moves the legend; the entry leaves as a drag once the pointer is outside."""
+
+    def __init__(self, plot, *a, **k):
+        super().__init__(*a, **k)
+        self._plot = plot
+        self._entry = None
+        self._pos0 = None
+
+    def entry_at(self, scene_pos):
+        for sample, label in self.items:
+            if sample.sceneBoundingRect().united(label.sceneBoundingRect()).contains(scene_pos):
+                return sample.item
+        return None
+
+    def mouseDragEvent(self, ev):
+        if ev.button() != Qt.LeftButton:
+            return
+        ev.accept()
+        if ev.isStart():
+            self._entry = self.entry_at(ev.buttonDownScenePos())
+            self._pos0 = self.pos()
+        if self._entry is not None and not self._plot.vb.sceneBoundingRect().contains(ev.scenePos()):
+            item, self._entry = self._entry, None
+            self.autoAnchor(self._pos0)
+            ref = self._plot.ref_of_item(item)
+            view = self.getViewWidget()
+            if ref is not None and view is not None:
+                QTimer.singleShot(0, lambda: self._start_drag(view, ref))
+            return
+        if ev.isFinish():
+            self._entry = None
+        super().mouseDragEvent(ev)
+
+    @staticmethod
+    def _start_drag(view, ref):
+        md = QMimeData()
+        md.setData(MIME_LINE, json.dumps(ref).encode())
+        drag = QDrag(view)
+        drag.setMimeData(md)
+        drag.exec(Qt.CopyAction)
+        # Qt swallowed the button release: tell the scene the press is over
+        local = QPointF(view.mapFromGlobal(QCursor.pos()))
+        QApplication.sendEvent(view.viewport(), QMouseEvent(QEvent.MouseButtonRelease, local, Qt.LeftButton,
+                                                            Qt.NoButton, Qt.NoModifier))
+
+
 class GraphPlot:
     """One PlotItem: a Flight Review graph and/or custom signals, plus the cursor."""
 
@@ -103,8 +162,9 @@ class GraphPlot:
         self.vb.setAutoVisible(y=True)
         if self.time_based:
             self.vb.disableAutoRange(axis="x")
-        self.legend = self.item.addLegend(offset=(-6, 4), labelTextSize="8pt",
-                                          **theme.legend_style())
+        self.legend = _DragLegend(self, offset=(-6, 4), labelTextSize="8pt", **theme.legend_style())
+        self.legend.setParentItem(self.vb)
+        self.item.legend = self.legend
         self.invert_y = False
         self.cursor = None
         if self.time_based:
@@ -114,6 +174,9 @@ class GraphPlot:
             self.cursor.setZValue(1000)
             self.item.addItem(self.cursor, ignoreBounds=True)
         self.signals: list[str] = []          # custom signals (keys)
+        self.overlays: list[dict] = []        # pasted lines: {"ref", "axis", "item", "name", "units"}
+        self.right = None                     # RightAxis, while a line sits on the right axis
+        self.right_settings: dict = {"mode": "auto"}
         self.series_items: list = []          # (name, PlotDataItem) of a Flight Review graph
         self.styles: dict[str, dict] = {}     # user edits, by series name -> look
         self.curves: dict[str, pg.PlotDataItem] = {}
@@ -362,7 +425,170 @@ class GraphPlot:
         out = list(self.series_items)
         for key, curve in self.curves.items():
             out.append((SignalKey.parse(key).label, curve))
+        out.extend((ov["name"], ov["item"]) for ov in self.overlays)
         return out
+
+    # --- pasted lines (overlays), left or right axis ---
+    def line_refs(self) -> list:
+        """Every line of the plot as (name, reference, item): what "Copy line" offers."""
+        if not self.time_based:
+            return []
+        out = []
+        if self.graph is not None:
+            for name, item in self.series_items:
+                out.append((name, line_refs.make_ref(graph=self.graph.id, series=name), item))
+        for key, curve in self.curves.items():
+            out.append((SignalKey.parse(key).label, line_refs.make_ref(signal=key), curve))
+        for ov in self.overlays:
+            out.append((ov["name"], dict(ov["ref"]), ov["item"]))
+        return out
+
+    def ref_of_item(self, item):
+        return next((ref for _n, ref, it in self.line_refs() if it is item), None)
+
+    def _right_ids(self) -> set:
+        return {id(ov["item"]) for ov in self.overlays if ov["axis"] == "right"}
+
+    def left_line_names(self) -> list[str]:
+        right = self._right_ids()
+        return [n for n, it in self.editable_series() if id(it) not in right]
+
+    def right_arrays(self) -> list:
+        return [self._full[ov["item"]] for ov in self.overlays if ov["axis"] == "right"]
+
+    def left_arrays(self, name) -> list:
+        right = self._right_ids()
+        return [self._full[it] for n, it in self.editable_series()
+                if n == name and id(it) not in right and it in self._full]
+
+    def _unique_name(self, base: str) -> str:
+        names = {n for n, _ in self.editable_series()}
+        name, i = base, 2
+        while name in names:
+            name, i = f"{base} #{i}", i + 1
+        return name
+
+    def add_overlay(self, ref: dict, axis: str = "left", style: dict | None = None) -> bool:
+        """Draw a line from a reference (see line_refs) on the left or right axis. False when it
+        cannot be (no such line in this log, not a time plot, already there)."""
+        axis = "right" if axis == "right" else "left"
+        ref = line_refs.norm_ref(ref)
+        if ref is None or not self.time_based:
+            return False
+        line = line_refs.resolve(ref, self.panel.log)
+        if line is None:
+            return False
+        rid = line_refs.ref_id(ref)
+        if any(line_refs.ref_id(ov["ref"]) == rid and ov["axis"] == axis for ov in self.overlays):
+            return False
+        pasted = {id(ov["item"]) for ov in self.overlays}
+        if axis == "left" and any(line_refs.ref_id(r) == rid for _n, r, it in self.line_refs()
+                                  if id(it) not in pasted):
+            return False   # already one of this plot's own lines
+        used = {pg.mkColor(series_state(it)["color"]).name() for _n, it in self.editable_series()}
+        color = theme.plot_color(line.color) if line.color else None
+        if color is None or pg.mkColor(color).name() in used:
+            free = [c for c in PALETTE if pg.mkColor(theme.plot_color(c)).name() not in used]
+            color = theme.plot_color(free[0] if free else PALETTE[len(self.overlays) % len(PALETTE)])
+        name = self._unique_name(line.label + (" (R)" if axis == "right" else ""))
+        if line.scatter:
+            item = pg.PlotDataItem(line.t, line.y, pen=None, symbol="o", symbolSize=5,
+                                   symbolPen=pg.mkPen(color, width=1.5), symbolBrush=None, name=name)
+        else:
+            item = pg.PlotDataItem(line.t, line.y, pen=pg.mkPen(color, width=LINE_WIDTH),
+                                   stepMode="left" if line.step else None, name=name)
+        _cache(item)
+        if axis == "right":
+            if self.right is None:
+                from .dual_axis import RightAxis
+                self.right = RightAxis(self)
+                self.right.set_settings(self.right_settings)
+            self.right.add_item(item)
+            self.legend.addItem(item, name)
+        else:
+            self.item.addItem(item)
+        self._full[item] = (line.t, line.y)
+        if self._trim:
+            self._slice(item, *self._trim)
+        self.overlays.append({"ref": ref, "axis": axis, "item": item, "name": name, "units": line.units})
+        if style:
+            apply_series_state(item, style)
+        self._n_legend += 1
+        self._update_legend()
+        self._update_right()
+        return True
+
+    def remove_overlay(self, ov: dict):
+        if ov not in self.overlays:
+            return
+        self.overlays.remove(ov)
+        item = ov["item"]
+        self._full.pop(item, None)
+        if ov["axis"] == "right":
+            self.right.remove_item(item)
+            self.legend.removeItem(item)
+        else:
+            self.item.removeItem(item)
+        self._n_legend -= 1
+        self._update_legend()
+        self._update_right()
+
+    def _update_right(self):
+        """After lines came or went on the right: label, refresh, or drop the axis when empty."""
+        rights = [ov for ov in self.overlays if ov["axis"] == "right"]
+        if not rights:
+            if self.right is not None:
+                self.right.close()
+                self.right = None
+                self.right_settings = {"mode": "auto"}
+            return
+        units = {ov["units"] for ov in rights if ov["units"]}
+        self.right.set_label(units.pop() if len(units) == 1 else "")
+        self.right.refresh()
+
+    def set_right_settings(self, s: dict, emit: bool = True):
+        self.right_settings = line_refs.clean_settings(s)
+        if self.right is not None:
+            self.right.set_settings(self.right_settings)
+        if emit:
+            self.panel.changed.emit()
+
+    def set_right_mode(self, mode: str):
+        s = dict(self.right_settings, mode=mode)
+        rng = self.right.range if self.right is not None else None
+        if mode == "manual" and rng and s.get("min") is None:
+            s["min"], s["max"] = rng
+        if mode == "match" and not s.get("match"):
+            names = self.left_line_names()
+            s["match"] = names[0] if names else None
+        self.set_right_settings(s)
+
+    def paste_line(self, axis: str = "left", ref: dict | None = None) -> bool:
+        ref = ref or line_refs.clipboard.get()
+        if ref is None or not self.add_overlay(ref, axis):
+            return False
+        self.panel.changed.emit()
+        return True
+
+    def copy_line(self, ref: dict):
+        line_refs.clipboard.set(ref)
+
+    def copy_via_menu(self, pos=None):
+        """Ctrl+C: the plot's line (a menu to pick when there are several) goes to the clipboard."""
+        refs = self.line_refs()
+        if not refs:
+            return None
+        ref = refs[0][1] if len(refs) == 1 else _pick([(n, r) for n, r, _ in refs], pos)
+        if ref is not None:
+            self.copy_line(ref)
+        return ref
+
+    def paste_via_menu(self, pos=None) -> bool:
+        """Ctrl+V: paste the clipboard line on this plot, asking left or right axis."""
+        if line_refs.clipboard.get() is None or not self.time_based:
+            return False
+        axis = _pick([("Left axis", "left"), ("Right axis", "right")], pos)
+        return axis is not None and self.paste_line(axis)
 
     def set_box_zoom(self, on: bool):
         """On: dragging draws a rectangle that zooms X and Y (the wheel stays X-only)."""
@@ -376,10 +602,14 @@ class GraphPlot:
             self.vb.setYRange(*self.graph.y_range, padding=0)
         else:
             self.vb.enableAutoRange(axis="y")
+        if self.right is not None:
+            self.right.refresh()
 
     def set_invert_y(self, on: bool):
         self.invert_y = bool(on)
         self.vb.invertY(self.invert_y)
+        if self.right is not None:
+            self.right.set_invert_y(self.invert_y)
         self._flip_act.blockSignals(True)
         self._flip_act.setChecked(self.invert_y)
         self._flip_act.blockSignals(False)
@@ -425,6 +655,13 @@ class GraphPlot:
         menu.addSeparator()
         self._rm_menu = menu.addMenu("Remove signal")
         self._rm_menu.aboutToShow.connect(self._fill_rm_menu)
+        self._copy_menu = menu.addMenu("Copy line")
+        self._copy_menu.aboutToShow.connect(self._fill_copy_menu)
+        self._paste_menu = menu.addMenu("Paste line")
+        self._paste_menu.aboutToShow.connect(self._fill_paste_menu)
+        self._right_menu = menu.addMenu("Right axis")
+        self._right_menu.aboutToShow.connect(self._fill_right_menu)
+        menu.aboutToShow.connect(self._enable_line_menus)
         menu.addAction("Move plot up", lambda: self.panel.move_plot(self, -1))
         menu.addAction("Move plot down", lambda: self.panel.move_plot(self, +1))
         self._flip_act = menu.addAction("Flip Y axis")
@@ -439,11 +676,58 @@ class GraphPlot:
 
     def _fill_rm_menu(self):
         self._rm_menu.clear()
-        if not self.signals:
+        if not self.signals and not self.overlays:
             self._rm_menu.addAction("(no added signals)").setEnabled(False)
         for key in list(self.signals):
             self._rm_menu.addAction(SignalKey.parse(key).label,
                                     lambda k=key: (self.remove_signal(k), self.panel.changed.emit()))
+        for ov in list(self.overlays):
+            self._rm_menu.addAction(ov["name"] + ("" if ov["axis"] == "right" else " (pasted)"),
+                                    lambda o=ov: (self.remove_overlay(o), self.panel.changed.emit()))
+
+    def _enable_line_menus(self):
+        self._copy_menu.menuAction().setEnabled(bool(self.line_refs()))
+        self._paste_menu.menuAction().setEnabled(self.time_based and line_refs.clipboard.get() is not None)
+        self._right_menu.menuAction().setEnabled(self.right is not None)
+
+    def _fill_copy_menu(self):
+        self._copy_menu.clear()
+        for name, ref, _it in self.line_refs():
+            self._copy_menu.addAction(name, lambda r=ref: self.copy_line(r))
+
+    def _fill_paste_menu(self):
+        m = self._paste_menu
+        m.clear()
+        ref = line_refs.clipboard.get()
+        on = ref is not None
+        m.addAction("on left axis", lambda: self.paste_line("left")).setEnabled(on and self.time_based)
+        m.addAction("on right axis", lambda: self.paste_line("right")).setEnabled(on and self.time_based)
+        m.addAction("as a new plot", lambda: self.panel.paste_as_new_plot(ref)).setEnabled(on)
+
+    def _fill_right_menu(self):
+        m = self._right_menu
+        m.clear()
+        cur = self.right_settings.get("mode", "auto")
+        for mode in line_refs.MODES:
+            if mode == "match":
+                sub = m.addMenu(line_refs.MODE_NAMES[mode])
+                sub.menuAction().setCheckable(True)
+                sub.menuAction().setChecked(cur == "match")
+                for n in self.left_line_names():
+                    a = sub.addAction(n, lambda nn=n: self.set_right_settings(
+                        dict(self.right_settings, mode="match", match=nn)))
+                    a.setCheckable(True)
+                    a.setChecked(cur == "match" and self.right_settings.get("match") == n)
+                continue
+            a = m.addAction(line_refs.MODE_NAMES[mode], lambda mm=mode: self.set_right_mode(mm))
+            a.setCheckable(True)
+            a.setChecked(cur == mode)
+        m.addSeparator()
+        m.addAction("Set range/gain\u2026", self.edit_right_axis)
+
+    def edit_right_axis(self):
+        from .dual_axis import RightAxisDialog
+        RightAxisDialog(self, self.panel.window()).exec()
 
     def to_dict(self) -> dict:
         if self.graph is not None:
@@ -456,6 +740,11 @@ class GraphPlot:
             d["custom_title"] = self.title
         if self.invert_y:
             d["invert_y"] = True
+        if self.overlays:
+            d["overlay"] = [dict(ov["ref"], axis=ov["axis"], style=series_state(ov["item"]))
+                            for ov in self.overlays]
+            if self.right is not None and self.right_settings.get("mode", "auto") != "auto":
+                d["right_axis"] = dict(self.right_settings)
         return d
 
 
@@ -473,7 +762,7 @@ class _PlotView(pg.GraphicsLayoutWidget):
 
     @staticmethod
     def _ours(md) -> bool:
-        return md.hasFormat(MIME_SIGNALS) or md.hasFormat(MIME_GRAPHS)
+        return md.hasFormat(MIME_SIGNALS) or md.hasFormat(MIME_GRAPHS) or md.hasFormat(MIME_LINE)
 
     def dragEnterEvent(self, ev):
         if self._ours(ev.mimeData()):
@@ -493,7 +782,15 @@ class _PlotView(pg.GraphicsLayoutWidget):
             return super().dropEvent(ev)
         pos = self.mapToScene(ev.position().toPoint())
         target = next((p for p in self.panel.plots if p.item.sceneBoundingRect().contains(pos)), None)
-        if md.hasFormat(MIME_GRAPHS):
+        if md.hasFormat(MIME_LINE):
+            try:
+                ref = json.loads(bytes(md.data(MIME_LINE)).decode())
+            except ValueError:
+                ref = None
+            if target is not None and target.time_based and ref is not None:
+                at = self.mapToGlobal(ev.position().toPoint())
+                QTimer.singleShot(0, lambda: self.panel.drop_line(ref, target, at))
+        elif md.hasFormat(MIME_GRAPHS):
             ids = bytes(md.data(MIME_GRAPHS)).decode().split("\n")
             idx = self.panel.plots.index(target) + 1 if target else None
             for gid in ids:
@@ -753,6 +1050,21 @@ class GraphPanel(QWidget):
                 target.add_signal(k)
             self.changed.emit()
 
+    def drop_line(self, ref: dict, target: GraphPlot, pos=None) -> bool:
+        """A legend entry was dropped on a plot: ask left / right axis, then paste it there."""
+        if target not in self.plots:
+            return False
+        axis = _pick([("Left axis", "left"), ("Right axis", "right")], pos)
+        return axis is not None and target.paste_line(axis, ref)
+
+    def paste_as_new_plot(self, ref: dict | None = None) -> GraphPlot | None:
+        ref = ref or line_refs.clipboard.get()
+        if ref is None or self.log is None or line_refs.resolve(ref, self.log) is None:
+            return None
+        p = GraphPlot(self, line_refs.ref_label(ref))
+        p.add_overlay(ref, "left")
+        return self._new_plot(p, None)
+
     def _relayout(self):
         self.view.ci.clear()
         for i, p in enumerate(self.plots):
@@ -952,6 +1264,10 @@ class GraphPanel(QWidget):
                 p = self._new_plot(GraphPlot(self, s.get("title", "")), None, relayout=False)
             for k in s.get("signals", []):
                 p.add_signal(k)
+            if s.get("right_axis"):
+                p.right_settings = line_refs.clean_settings(s["right_axis"])
+            for o in s.get("overlay", []):
+                p.add_overlay(o, o.get("axis", "left"), o.get("style"))
             if s.get("custom_title"):
                 p.set_title(s["custom_title"])
             if s.get("styles"):
