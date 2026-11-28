@@ -24,6 +24,7 @@ from pathlib import Path
 PROJECT_EXT = ".flproj"
 LAYOUT_EXT = ".fllayout"
 PRESET_EXT = ".flpreset"
+COMPARE_EXT = ".flcmp"
 FORMAT_VERSION = 1
 
 
@@ -209,6 +210,59 @@ def load_project(path: str | Path) -> dict:
     return data
 
 
+# --- comparisons (.flcmp) ----------------------------------------------------------
+def save_comparison(path: str | Path, data: dict):
+    """data: {"logs": [{"path" (absolute), "name", "color", "offset_s", "active"}], "panels": [...],
+    "pan_together": bool, "dock_state": str, "geometry": str}. Log paths are stored relative to the
+    file and absolute (like save_project)."""
+    path = Path(path)
+    base = path.parent
+    out = json.loads(json.dumps(data))
+    out["app"] = "FlightLogger"
+    out["kind"] = "comparison"
+    out["version"] = FORMAT_VERSION
+    out.setdefault("panels", [])
+    for entry in out.get("logs") or []:
+        if entry.get("path"):
+            absolute = str(Path(entry["path"]).resolve())
+            entry["path"] = to_rel(absolute, base)
+            entry["abs_path"] = absolute
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_comparison(path: str | Path) -> dict:
+    """Returns the comparison with absolute log paths: the relative one if it exists, else the
+    absolute one, else a file of the same name next to the .flcmp (find_moved), else the relative
+    path (missing). Entries found elsewhere get "relinked": True."""
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("app") != "FlightLogger" or data.get("kind") != "comparison":
+        raise ValueError(f"{path.name} is not a FlightLogger comparison")
+    if int(data.get("version", 0)) > FORMAT_VERSION:
+        raise ValueError(f"{path.name} was saved by a newer FlightLogger")
+    for entry in data.get("logs") or []:
+        if not entry.get("path"):
+            continue
+        rel = from_rel(entry["path"], path.parent)
+        absolute = Path(entry["abs_path"]) if entry.get("abs_path") else None
+        if rel.exists():
+            entry["path"] = str(rel)
+        elif absolute is not None and absolute.exists():
+            entry["path"] = str(absolute)
+        else:
+            moved = find_moved(absolute or rel, path.parent)
+            if moved is not None:
+                entry["path"] = str(moved)
+                entry["relinked"] = True
+            else:
+                entry["path"] = str(rel)
+    data.setdefault("logs", [])
+    data.setdefault("panels", [])
+    return data
+
+
 # --- named layouts ------------------------------------------------------------------
 def config_dir() -> Path:
     env = os.environ.get("FLIGHTLOGGER_CONFIG_DIR")
@@ -315,6 +369,11 @@ class RecentProjects:
         items = [p] + [x for x in self.list() if x != p]
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(items[: self.MAX], indent=1), encoding="utf-8")
+
+
+class RecentComparisons(RecentProjects):
+    def __init__(self, directory: str | Path | None = None):
+        self.file = Path(directory or config_dir()) / "recent_comparisons.json"
 
 
 class Settings:

@@ -67,6 +67,7 @@ SVG = {
     "film": '<rect x="3" y="5" width="18" height="14" rx="2"/>'
             '<path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
     "layout": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M9 11h12"/>',
+    "compare": '<path d="M3 8l4 5 4-7 4 9 3-4 3 3"/><path d="M3 18h18" stroke-dasharray="2.4 2.6"/>',
     "log": '<path d="M7 3h7l5 5v11.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 6 19.5v-15A1.5 1.5 0 0 1 7.5 3z"/>'
            '<path d="M9.5 12h5M9.5 16h5"/>',
 }
