@@ -41,6 +41,7 @@ class LogsPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(2, self.table.horizontalHeader().ResizeMode.Stretch)
+        self.table.horizontalHeader().setMinimumSectionSize(40)
         self.import_btn = QPushButton(icons.icon("plus"), "Import logs…")
         self.import_btn.clicked.connect(window.import_logs_dialog)
         self.hint = QLabel(f"At most {MAX_ACTIVE} logs are shown at once. Logs are aligned at takeoff; "
@@ -85,6 +86,7 @@ class LogsPanel(QWidget):
             t.setCellWidget(r, 2, name)
             spin = QDoubleSpinBox()
             spin.setRange(-100000.0, 100000.0)
+            spin.setFixedWidth(78)
             spin.setDecimals(2)
             spin.setSingleStep(0.5)
             spin.setValue(e.offset_s)
@@ -110,6 +112,12 @@ class LogsPanel(QWidget):
             self.checks[r], self.spins[r], self.names[r] = chk, spin, name
         for c in (0, 1, 3, 4, 5):
             t.resizeColumnToContents(c)
+        t.setMinimumWidth(self._min_table_width())
+
+    def _min_table_width(self) -> int:
+        """Name gets at least 150 px next to the compact columns."""
+        t = self.table
+        return sum(t.columnWidth(c) for c in (0, 1, 3, 4, 5)) + 150 + 24
 
     @staticmethod
     def _centered(w) -> QWidget:
@@ -152,7 +160,7 @@ class CompareWindow(QMainWindow):
         self._panel_seq = 0
         self._panel_dicts: list[dict] = []       # kept for the base hook (panels are rebuilt at once)
         self._default_done = False               # the first logs of a comparison get a default panel
-        self.pan_together = True
+        self.pan_together = False
         self._restart_args: list[str] | None = None
         self._saved_snapshot = self._snapshot()
 
@@ -211,7 +219,7 @@ class CompareWindow(QMainWindow):
                 mgr.removeDockWidget(dw)
         logs_area = self.docks.add(self.logs_dw, dh.LEFT)
         self.docks.add(self.params_dw, dh.BOTTOM, logs_area)
-        mgr.setSplitterSizes(logs_area, [220, 480])
+        mgr.setSplitterSizes(logs_area, [200, 500])
         self.logs_dw.toggleView(True)
         self.params_dw.toggleView(True)
         first = None
@@ -226,7 +234,7 @@ class CompareWindow(QMainWindow):
     def _size_columns(self, panel_area):
         if panel_area is not None:
             total = max(self.docks.mgr.width(), 1000)
-            left = min(400, total // 4)
+            left = min(620, int(total * 0.38))
             self.docks.mgr.setSplitterSizes(panel_area, [left, total - left])
 
     def new_panel(self, title: str | None = None, specs: list[dict] | None = None, pid: str | None = None,
@@ -487,7 +495,7 @@ class CompareWindow(QMainWindow):
             return False
         self.path = Path(path)
         self.logset.load_dict(data.get("logs") or [])
-        self._set_pan_together(bool(data.get("pan_together", True)))
+        self._set_pan_together(bool(data.get("pan_together", False)))
         self.load_panels(data.get("panels") or [])
         try:
             if data.get("dock_state"):

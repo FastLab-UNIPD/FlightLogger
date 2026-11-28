@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QMenu, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -49,6 +49,7 @@ class ParamsCompare(QWidget):
         self._copy_filter = CopyKeyFilter(self.table, self.copy_selected)
         self.group_list = QListWidget()
         self.group_list.setMinimumWidth(80)
+        self.filter.setMinimumWidth(120)
         self.group_list.currentItemChanged.connect(lambda *_: self._apply_filter())
         self.filter.textChanged.connect(self._apply_filter)
         self.only_diff.toggled.connect(self._apply_filter)
@@ -66,7 +67,7 @@ class ParamsCompare(QWidget):
         self.splitter.addWidget(self.group_list)
         self.splitter.addWidget(right)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([170, 700])
+        self.splitter.setSizes([130, 700])
         self.splitter.splitterMoved.connect(
             lambda *_: setattr(ParamsCompare, "_splitter_sizes", self.splitter.sizes()))
         if ParamsCompare._splitter_sizes:
@@ -84,7 +85,7 @@ class ParamsCompare(QWidget):
 
     # --- data ---
     def _signature(self):
-        return tuple((id(e), e.name, e.log is not None) for e in self.logset.entries)
+        return tuple((id(e), e.name, e.color, e.log is not None) for e in self.logset.entries)
 
     def refresh(self):
         """Rebuild when logs were added/removed/renamed/loaded (not on offset or active changes)."""
@@ -132,11 +133,23 @@ class ParamsCompare(QWidget):
                 it.setData(Qt.UserRole + 1, default)
                 cells.append(it)
             cells[0].setData(Qt.UserRole, differs)
+            cells[0].setToolTip(f"Group: {group}")
             for c, it in enumerate(cells):
                 t.setItem(r, c, it)
         t.setSortingEnabled(True)
         t.sortByColumn(0, Qt.AscendingOrder)
-        t.resizeColumnsToContents()
+        for c, e in enumerate((e for e in self.logset.entries if e.log is not None), _FIXED):
+            h = t.horizontalHeaderItem(c)
+            h.setForeground(QBrush(QColor(e.color)))
+            pm = QPixmap(12, 12)
+            pm.fill(QColor(e.color))
+            h.setIcon(QIcon(pm))             # the style may ignore the header text color
+            h.setToolTip(e.path)
+        t.setColumnHidden(1, True)           # the group list filters by group; shown in the name's tooltip
+        t.setColumnWidth(0, 150)             # name, then the log values right after it (names elide)
+        for c in range(_FIXED, t.columnCount()):
+            t.setColumnWidth(c, 105)
+        t.horizontalHeader().setTextElideMode(Qt.ElideLeft)   # the end of a log name tells logs apart
         fill_group_list(self.group_list, len(names), counts,
                         self.n_diff if len(entries) > 1 else None, "Differences")
         self._apply_filter()

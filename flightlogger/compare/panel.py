@@ -152,6 +152,7 @@ class ComparePlot(GraphPlot):
         self._base_title = self.item.titleLabel.text or self.title
         self._tag = ("", "")
         self.show_tag = True
+        self.legend_on = True
         for a in list(self.vb.menu.actions()):
             if a.text() == "Isolate plot in a floating window":
                 self.vb.menu.removeAction(a)
@@ -171,6 +172,9 @@ class ComparePlot(GraphPlot):
         if name and self.show_tag:
             txt += f'  <span style="color:{escape(color)}">● {escape(name)}</span>'
         self.item.setTitle(txt, **self._title_opts)
+        tl = self.item.titleLabel            # a long title must not stop narrow columns from shrinking
+        tl.updateMin = lambda: None
+        tl.setMinimumWidth(0)
 
     def set_tag_visible(self, on: bool):
         if on != self.show_tag:
@@ -183,6 +187,24 @@ class ComparePlot(GraphPlot):
 
     def auto_y(self):
         self.host.panel.auto_y(self.spec)
+
+    def _update_legend(self):
+        self.legend.setColumnCount(1)
+        self.legend.setVisible(self._n_legend > 0 and getattr(self, "legend_on", True))
+
+    def set_legend_visible(self, on: bool):
+        self.legend_on = bool(on)
+        self._update_legend()
+
+    def _update_right(self):
+        super()._update_right()
+        r = self.right
+        if r is not None and not getattr(r, "_cmp_linked", False):
+            r._cmp_linked = True            # the panel sets the shared right range, not the axis's own timer
+            try:
+                self.vb.sigXRangeChanged.disconnect(r._on_x)
+            except (RuntimeError, TypeError):
+                pass
 
     def left_data(self) -> list:
         right = self._right_ids()
@@ -216,6 +238,7 @@ class Spec:
         self.plots: dict[LogEntry, ComparePlot] = {}
         self.y_auto = True
         self.y_range: tuple[float, float] | None = None
+        self.right_link = None      # (data span, match-target span) shared by the right axes
 
     @property
     def graph_id(self) -> str | None:
@@ -279,7 +302,7 @@ class ComparePanel(QWidget):
     panTogetherToggled = Signal(bool)
 
     def __init__(self, logset: LogSet, panel_id: str = "cmp_1", title: str = "Comparison",
-                 pan_together: bool = True, parent=None):
+                 pan_together: bool = False, parent=None):
         super().__init__(parent)
         self.logset = logset
         self.panel_id = panel_id
@@ -297,6 +320,7 @@ class ComparePanel(QWidget):
         self._holes: list = []
         self._shift_pending: set[LogEntry] = set()
         self._box = False
+        self._legends = True
         self._disposed = False
 
         self._ytimer = QTimer(self)
@@ -338,6 +362,9 @@ class ComparePanel(QWidget):
                                                          "longest flight; automatic Y")
         self.box_btn = QToolButton(checkable=True, toolTip="On: drag a rectangle to zoom X and Y "
                                                            "(Y applies to the same graph of every log)")
+        self.legend_btn = QToolButton(text="Legends", checkable=True, checked=True,
+                                      toolTip="Show or hide the line legends of the plots.\nSide by side, legends hide by themselves when the plots get narrow.")
+        self.legend_btn.toggled.connect(self.set_legends)
         self.pan_btn = QToolButton(text="Pan together", checkable=True, checked=self.pan_together,
                                    toolTip="On: panning one log moves all logs by the same amount.\n"
                                            "Off: each log pans on its own (zoom always changes every width).")
@@ -356,7 +383,7 @@ class ComparePanel(QWidget):
         self.height_box.setMinimumWidth(64)
         self.height_box.setMinimumHeight(26)
         self.height_box.currentTextChanged.connect(lambda _t: self._relayout())
-        for w in (self.graph_btn, self.preset_btn, self.mode_box, self.fit_btn, self.box_btn, self.pan_btn,
+        for w in (self.graph_btn, self.preset_btn, self.mode_box, self.fit_btn, self.box_btn, self.pan_btn, self.legend_btn,
                   QLabel(" Height "), self.height_box):
             bar.addWidget(w)
         self.busy_bar = QProgressBar(maximum=0, minimum=0, textVisible=False)
@@ -396,6 +423,7 @@ class ComparePanel(QWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        self._update_legends()
         QTimer.singleShot(0, self._refresh_stale)
 
     def dragEnterEvent(self, ev):
@@ -587,6 +615,7 @@ class ComparePanel(QWidget):
         p.set_modes(ctx.slog.mode_segments())
         if self._box:
             p.set_box_zoom(True)
+        p.set_legend_visible(self._legend_effective())
         p.show_tag = self.mode == "rows"     # columns have their header; a long title squeezes them
         p.set_tag(e.name, e.color)
         p.stale = True
@@ -794,6 +823,7 @@ class ComparePanel(QWidget):
                 p.set_tag_visible(self.mode == "rows")
                 p.stale = True
         self._update_legend()
+        self._update_legends()
         self._refresh_stale()
 
     def _after_structure(self):
@@ -826,6 +856,9 @@ class ComparePanel(QWidget):
         finally:
             self._syncing -= 1
         p.stale = False
+        if p.right is not None and spec.right_link is not None:
+            p.right._data, p.right._target = spec.right_link
+            p.right.apply()
 
     def _refresh_stale(self, *_):
         if self._disposed:
@@ -947,7 +980,7 @@ class ComparePanel(QWidget):
         self.recompute_y([spec])
 
     def _schedule_y(self):
-        if any(s.y_auto and s.linked for s in self.specs):
+        if any(s.linked for s in self.specs):
             self._ytimer.start()
 
     def spec_y_union(self, spec: Spec) -> tuple[float, float] | None:
@@ -962,11 +995,36 @@ class ComparePanel(QWidget):
                 spans.append((p.graph.y_start, p.graph.y_start))
         return line_refs.union_span(spans)
 
+    def _link_right(self, s: Spec, everything: bool):
+        """One right range for the whole graph: union of every log's visible right data."""
+        plots = [(e, p) for e, p in s.plots.items() if p.right is not None]
+        if not plots:
+            s.right_link = None
+            return
+        data, target = [], []
+        for e, p in plots:
+            x0 = self._x0.get(e)
+            if x0 is None or self._w is None:
+                continue
+            data += [line_refs.visible_span(t, y, x0, x0 + self._w) for t, y in p.right_arrays()]
+            if p.right_settings.get("mode") == "match":
+                target += [line_refs.visible_span(t, y, x0, x0 + self._w)
+                           for t, y in p.left_arrays(p.right_settings.get("match"))]
+        s.right_link = (line_refs.union_span(data), line_refs.union_span(target))
+        top, bottom = self._window()
+        for _e, p in plots:
+            if everything or self._visible(p, top, bottom):
+                p.right._data, p.right._target = s.right_link
+                p.right.apply()
+            else:
+                p.stale = True
+
     def recompute_y(self, specs=None, everything: bool = False):
         top, bottom = self._window()
         for s in specs or self.specs:
             if not s.linked:
                 continue
+            self._link_right(s, everything)
             if s.y_auto:
                 u = self.spec_y_union(s)
                 if u is None:
@@ -1035,6 +1093,29 @@ class ComparePanel(QWidget):
             p.set_box_zoom(self._box)
         self.changed.emit()
 
+    def set_legends(self, on: bool):
+        self._legends = bool(on)
+        if self.legend_btn.isChecked() != self._legends:
+            self.legend_btn.blockSignals(True)
+            self.legend_btn.setChecked(self._legends)
+            self.legend_btn.blockSignals(False)
+        self._update_legends()
+        self.changed.emit()
+
+    LEGEND_MIN_COLUMN = 380       # side by side: narrower plots would be mostly legend
+
+    def _legend_effective(self) -> bool:
+        if not self._legends:
+            return False
+        n = len(self._shown)
+        return not (self.mode == "columns" and n > 1 and self.view.width() / n < self.LEGEND_MIN_COLUMN)
+
+    def _update_legends(self):
+        on = self._legend_effective()
+        for _s, p in self._all_plots():
+            if p.legend_on != on:
+                p.set_legend_visible(on)
+
     def set_plot_height(self, key: str):
         self.height_box.setCurrentText(key)
 
@@ -1043,7 +1124,8 @@ class ComparePanel(QWidget):
         return {"id": self.panel_id, "title": self.title, "mode": self.mode,
                 "height": self.height_box.currentText(),
                 "plots": [json.loads(json.dumps(s.d)) for s in self.specs],
-                **({"box_zoom": True} if self._box else {})}
+                **({"box_zoom": True} if self._box else {}),
+                **({} if self._legends else {"legends": False})}
 
     def load_dict(self, d: dict):
         for s in self.specs:
@@ -1060,6 +1142,7 @@ class ComparePanel(QWidget):
         self.mode_box.setCurrentIndex(max(0, self.mode_box.findData(self.mode)))
         self.mode_box.blockSignals(False)
         self.set_box_zoom(bool(d.get("box_zoom", False)))
+        self.set_legends(bool(d.get("legends", True)))
         for sd in d.get("plots", []):
             if isinstance(sd, dict) and (sd.get("graph") is not None or "title" in sd or "signals" in sd):
                 spec = Spec(dict(sd))
@@ -1092,6 +1175,9 @@ class ComparePanel(QWidget):
 
 def _set_header(hdr: pg.LabelItem, e: LogEntry):
     hdr.setText(f"● {e.name}", color=e.color, bold=True, size="11pt")
+    hdr.updateMin = lambda: None            # a long name must not stop the columns from narrowing
+    hdr.setMinimumWidth(0)
+    hdr.setMinimumHeight(HEADER_H - 4)
 
 
 def _builtin_presets() -> dict:
