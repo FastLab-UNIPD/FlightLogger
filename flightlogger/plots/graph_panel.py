@@ -175,6 +175,7 @@ class GraphPlot:
             self.item.addItem(self.cursor, ignoreBounds=True)
         self.signals: list[str] = []          # custom signals (keys)
         self.overlays: list[dict] = []        # pasted lines: {"ref", "axis", "item", "name", "units"}
+        self._unresolved: list = []           # (position, saved dict) of pasted lines this log lacks
         self.right = None                     # RightAxis, while a line sits on the right axis
         self.right_settings: dict = {"mode": "auto"}
         self.series_items: list = []          # (name, PlotDataItem) of a Flight Review graph
@@ -468,7 +469,8 @@ class GraphPlot:
             name, i = f"{base} #{i}", i + 1
         return name
 
-    def add_overlay(self, ref: dict, axis: str = "left", style: dict | None = None) -> bool:
+    def add_overlay(self, ref: dict, axis: str = "left", style: dict | None = None,
+                    keep: bool = False) -> bool:
         """Draw a line from a reference (see line_refs) on the left or right axis. False when it
         cannot be (no such line in this log, not a time plot, already there)."""
         axis = "right" if axis == "right" else "left"
@@ -477,6 +479,9 @@ class GraphPlot:
             return False
         line = line_refs.resolve(ref, self.panel.log)
         if line is None:
+            if keep:   # not in this log: not drawn, but saved again as it was (retried on the next log)
+                self._unresolved.append((len(self.overlays) + len(self._unresolved),
+                                         dict(ref, axis=axis, **({"style": style} if style else {}))))
             return False
         rid = line_refs.ref_id(ref)
         if any(line_refs.ref_id(ov["ref"]) == rid and ov["axis"] == axis for ov in self.overlays):
@@ -740,10 +745,12 @@ class GraphPlot:
             d["custom_title"] = self.title
         if self.invert_y:
             d["invert_y"] = True
-        if self.overlays:
-            d["overlay"] = [dict(ov["ref"], axis=ov["axis"], style=series_state(ov["item"]))
-                            for ov in self.overlays]
-            if self.right is not None and self.right_settings.get("mode", "auto") != "auto":
+        if self.overlays or self._unresolved:
+            ovs = [dict(ov["ref"], axis=ov["axis"], style=series_state(ov["item"])) for ov in self.overlays]
+            for pos, u in sorted(self._unresolved, key=lambda x: x[0]):
+                ovs.insert(min(pos, len(ovs)), dict(u))
+            d["overlay"] = ovs
+            if self.right_settings.get("mode", "auto") != "auto":
                 d["right_axis"] = dict(self.right_settings)
         return d
 
@@ -1267,7 +1274,7 @@ class GraphPanel(QWidget):
             if s.get("right_axis"):
                 p.right_settings = line_refs.clean_settings(s["right_axis"])
             for o in s.get("overlay", []):
-                p.add_overlay(o, o.get("axis", "left"), o.get("style"))
+                p.add_overlay(o, o.get("axis", "left"), o.get("style"), keep=True)
             if s.get("custom_title"):
                 p.set_title(s["custom_title"])
             if s.get("styles"):
