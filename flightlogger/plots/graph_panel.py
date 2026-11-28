@@ -164,6 +164,7 @@ class GraphPlot:
             self.vb.disableAutoRange(axis="x")
         self.legend = _DragLegend(self, offset=(-6, 4), labelTextSize="8pt", **theme.legend_style())
         self.legend.setParentItem(self.vb)
+        self.vb.sigResized.connect(lambda *_: self._n_legend > 4 and self._update_legend())
         self.item.legend = self.legend
         self.invert_y = False
         self.cursor = None
@@ -323,8 +324,16 @@ class GraphPlot:
                 item.setData(t, y)
 
     def _update_legend(self):
-        self.legend.setColumnCount(2 if self._n_legend > 4 else 1)
+        """Two columns from 5 entries on, unless that box (long labels) would not fit the plot."""
+        cols = 2 if self._n_legend > 4 else 1
+        self.legend.setColumnCount(cols)
         self.legend.setVisible(self._n_legend > 0)
+        if cols == 2:
+            width = self.vb.width()
+            self.legend.updateSize()
+            if width > 50 and self.legend.boundingRect().width() > 0.9 * width:
+                self.legend.setColumnCount(1)
+                self.legend.updateSize()
 
     def set_notes(self, notes):
         """Timeline notes: dashed line (instant) or shaded band (span).

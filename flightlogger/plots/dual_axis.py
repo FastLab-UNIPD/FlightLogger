@@ -53,7 +53,8 @@ class RightAxis(QObject):
         self.vb.setZValue(-1)                   # under the main ViewBox (curves, cursor, legend)
         self.vb.setParentItem(self.pi)
         self.vb.disableAutoRange()
-        self.vb.setXLink(self.vb1)
+        self.vb.setXRange(*self.vb1.viewRange()[0], padding=0)   # followed by hand (_on_x), not setXLink:
+        # a linked ViewBox calls into its partner while both are being destroyed, which crashed at exit
         self.vb.invertY(plot.invert_y)
         self.pi.showAxis("right")
         self.axis = self.pi.getAxis("right")
@@ -107,7 +108,6 @@ class RightAxis(QObject):
                 sig.disconnect(slot)
             except (RuntimeError, TypeError):
                 pass
-        self.vb.setXLink(None)
         self.pi.hideAxis("right")
         sc = self.vb.scene()
         if sc is not None:
@@ -126,8 +126,14 @@ class RightAxis(QObject):
         self.refresh()
 
     # --- range ---
-    def _on_x(self, *_):
-        if self._open and self.settings.get("mode") != "manual":
+    def _on_x(self, vb, rng):
+        if not self._open:
+            return
+        try:
+            self.vb.setXRange(rng[0], rng[1], padding=0)
+        except RuntimeError:
+            return
+        if self.settings.get("mode") != "manual":
             self._timer.start()
 
     def _on_left_y(self, *_):
