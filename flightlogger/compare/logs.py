@@ -29,6 +29,22 @@ class _LoadThread(QThread):
             self.loaded.emit(None, f"{type(e).__name__}: {e}")
 
 
+class _GraphsThread(QThread):
+    """Computes the Flight Review graphs of one log off the UI thread (seconds per log)."""
+    done = Signal(str)
+
+    def __init__(self, log: FlightLog):
+        super().__init__()
+        self.log = log
+
+    def run(self):
+        try:
+            self.log.graphs
+            self.done.emit("")
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            self.done.emit(f"{type(e).__name__}: {e}")
+
+
 @dataclass(eq=False)
 class LogEntry:
     path: str
@@ -40,6 +56,8 @@ class LogEntry:
     takeoff: float = 0.0
     error: str = ""
     loading: bool = False
+    graphs_loading: bool = False
+    graph_seconds: float = 0.0      # how long the graphs took (information)
     relinked: bool = False
 
 
@@ -47,6 +65,7 @@ class LogSet(QObject):
     changed = Signal()              # entries added/removed/edited, active or offset changed
     loaded = Signal(object)         # LogEntry
     failed = Signal(object, str)    # LogEntry, error text
+    graphs_ready = Signal(object)   # LogEntry: its Flight Review graphs are computed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -124,6 +143,36 @@ class LogSet(QObject):
         """Log time (s) -> comparison time: takeoff = 0, plus the manual offset. Works on arrays."""
         return t - entry.takeoff + entry.offset_s
 
+    # --- Flight Review graphs (lazy, background thread) ---
+    @staticmethod
+    def has_graphs(entry: LogEntry) -> bool:
+        return entry.log is not None and entry.log._graphs is not None
+
+    def ensure_graphs(self, entry: LogEntry):
+        """Start computing the entry's graphs unless done / running (graphs_ready follows)."""
+        if entry.log is None or entry.graphs_loading or self.has_graphs(entry) or entry.error:
+            return
+        import time
+        entry.graphs_loading = True
+        t0 = time.perf_counter()
+        th = _GraphsThread(entry.log)
+        self._threads.add(th)
+        th.finished.connect(lambda t=th: self._threads.discard(t))
+        th.done.connect(lambda err, e=entry, t0=t0: self._on_graphs(e, err, time.perf_counter() - t0))
+        th.start()
+
+    def _on_graphs(self, e: LogEntry, err: str, secs: float):
+        e.graphs_loading = False
+        e.graph_seconds = secs
+        if e not in self.entries:
+            return
+        if err:
+            e.error = err
+            self.failed.emit(e, err)
+            self.changed.emit()
+        else:
+            self.graphs_ready.emit(e)
+
     # --- loading ---
     def _start_load(self, e: LogEntry):
         e.loading, e.error = True, ""
@@ -148,9 +197,13 @@ class LogSet(QObject):
     def wait_all(self, timeout_ms: int = 120000):
         """Block until every load finished and its result was delivered (tests, scripts)."""
         from PySide6.QtCore import QCoreApplication
-        for th in list(self._threads):
-            th.wait(timeout_ms)
-        QCoreApplication.processEvents()
+        for _ in range(20):          # a delivered log may start its graphs thread
+            threads = list(self._threads)
+            for th in threads:
+                th.wait(timeout_ms)
+            QCoreApplication.processEvents()
+            if not threads:
+                break
 
     # --- file format ---
     def to_dict(self) -> list[dict]:
